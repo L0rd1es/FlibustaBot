@@ -217,16 +217,18 @@ def download_book(book_id: str, fmt: str) -> bytes:
 
 def get_author_books(author_id: str) -> list:
     """
-    Пытаемся найти книги автора на странице /a/{author_id}. Сначала ищем заголовки с фразами:
-      "Книги автора", "Произведения автора", "Найденные книги", "Список произведений"
-    Если не найдено – выполняем fallback, ищем все ссылки с "/b/" внутри основного контейнера.
+    Пытаемся найти книги автора на странице /a/{author_id}.
+    Сначала ищем секцию с заголовками, содержащими фразы:
+      "Книги автора", "Произведения автора", "Найденные книги", "Список произведений".
+    Если такая секция не найдена – выполняем fallback, выбирая только ссылки,
+    href которых строго соответствует формату "/b/<digits>".
     """
     html = fetch_url_with_penalty(f"/a/{author_id}", headers={"User-Agent": "Bot/1.0"})
     soup = BeautifulSoup(html, "lxml")
-
+    
     out = []
-
-    # Попытка 1: ищем по заголовкам
+    
+    # Попытка 1: поиск по заголовкам
     h_section = soup.find(lambda t: t.name in ("h2", "h3") and (
         "Книги автора" in t.get_text("", strip=True) or
         "Произведения автора" in t.get_text("", strip=True) or
@@ -236,18 +238,20 @@ def get_author_books(author_id: str) -> list:
     if h_section:
         ul = h_section.find_next("ul")
         if ul:
-            li_list = ul.find_all("li")
-            for li in li_list:
-                a_tags = li.find_all("a")
-                if not a_tags:
+            for li in ul.find_all("li"):
+                a_tag = li.find("a")
+                if not a_tag:
                     continue
-                raw_title = " ".join(a_tags[0].get_text().split())
+                raw_title = " ".join(a_tag.get_text().split())
                 t_clean = re.sub(r"\([^)]+\)$", "", raw_title).strip()
-                hr = a_tags[0].get("href", "")
+                hr = a_tag.get("href", "")
                 b_id = hr.split("/b/")[-1] if "/b/" in hr else "???"
-                # Попытка взять имя автора из заголовка страницы
                 h1_author = soup.find("h1")
-                auth_name = " ".join(h1_author.get_text().split()) if h1_author else "Автор"
+                if h1_author:
+                    text_h1 = " ".join(h1_author.get_text().split())
+                    auth_name = text_h1 if "флибуста" not in text_h1.lower() else "Неизвестен"
+                else:
+                    auth_name = "Неизвестен"
                 out.append({
                     "id": b_id,
                     "title": t_clean,
@@ -256,23 +260,25 @@ def get_author_books(author_id: str) -> list:
         if out:
             return out
 
-    # Fallback: если стандартная схема не сработала, ищем все ссылки с "/b/" внутри div с id "content"
-    content_div = soup.find("div", id="content")
-    if content_div:
-        seen = set()
-        for link in content_div.find_all("a", href=lambda x: x and x.startswith("/b/")):
-            hr = link.get("href")
-            b_id = hr.split("/b/")[-1]
-            if b_id in seen:
-                continue
-            seen.add(b_id)
-            title = " ".join(link.get_text().split())
-            # Попытка взять имя автора из h1 или из родительского элемента
-            h1_author = soup.find("h1")
-            auth_name = " ".join(h1_author.get_text().split()) if h1_author else "Автор"
-            out.append({
-                "id": b_id,
-                "title": title,
-                "author": auth_name
-            })
+    # Fallback: ищем все ссылки с href строго соответствующим шаблону "/b/<digits>"
+    links = soup.find_all("a", href=re.compile(r"^/b/\d+$"))
+    seen = set()
+    for link in links:
+        hr = link.get("href")
+        b_id = hr.split("/b/")[-1]
+        if b_id in seen:
+            continue
+        seen.add(b_id)
+        title = " ".join(link.get_text().split())
+        h1_author = soup.find("h1")
+        if h1_author:
+            text_h1 = " ".join(h1_author.get_text().split())
+            auth_name = text_h1 if "флибуста" not in text_h1.lower() else "Неизвестен"
+        else:
+            auth_name = "Неизвестен"
+        out.append({
+            "id": b_id,
+            "title": title,
+            "author": auth_name
+        })
     return out
