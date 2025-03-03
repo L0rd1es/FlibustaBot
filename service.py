@@ -1,0 +1,278 @@
+# service.py
+
+import time
+import requests
+import re
+from bs4 import BeautifulSoup
+from config import FLIBUSTA_MIRRORS, RATE_LIMIT_RPS
+
+mirror_state = [
+    {"url": m, "penalty": 0} for m in FLIBUSTA_MIRRORS
+]
+last_request_time = 0.0
+
+def rate_limit():
+    global last_request_time
+    interval = 1.0 / RATE_LIMIT_RPS
+    now = time.time()
+    elapsed = now - last_request_time
+    if elapsed < interval:
+        time.sleep(interval - elapsed)
+    last_request_time = time.time()
+
+def fetch_url_with_penalty(path: str, params=None, headers=None, max_retries=3) -> str:
+    attempt = 0
+    delay = 1
+    last_exc = None
+    while attempt < max_retries:
+        attempt += 1
+        mirror_state.sort(key=lambda x: x["penalty"])
+        mirror = mirror_state[0]
+        url = mirror["url"] + path
+        rate_limit()
+        try:
+            resp = requests.get(url, params=params, headers=headers, timeout=10)
+            if resp.status_code == 200:
+                mirror["penalty"] = max(0, mirror["penalty"] - 1)
+                return resp.text
+            else:
+                mirror["penalty"] += 1
+                last_exc = Exception(f"HTTP {resp.status_code} {url}")
+        except Exception as e:
+            mirror["penalty"] += 1
+            last_exc = e
+        time.sleep(delay)
+        delay *= 2
+    raise last_exc or Exception("All mirrors failed")
+
+def search_books_and_authors(query: str, mode="general") -> dict:
+    params = {"ask": query}
+    if mode in ("general", "book"):
+        params["chb"] = "on"
+    if mode in ("general", "author"):
+        params["cha"] = "on"
+    if mode == "general":
+        params["chs"] = "on"
+
+    html = fetch_url_with_penalty("/booksearch", params=params, headers={"User-Agent": "Bot/1.0"})
+    soup = BeautifulSoup(html, "lxml")
+
+    data = {
+        "books_found": [],
+        "authors_found": []
+    }
+
+    # Авторы
+    h3_auth = soup.find(lambda t: t.name == "h3" and "Найденные писатели" in t.get_text("", strip=True))
+    if h3_auth:
+        ul = h3_auth.find_next("ul")
+        if ul:
+            for li in ul.find_all("li"):
+                a_tag = li.find("a", href=lambda x: x and x.startswith("/a/"))
+                if not a_tag:
+                    continue
+                href = a_tag["href"]
+                author_id = href.split("/a/")[-1]
+                txt = " ".join(li.get_text().split())
+                # Пример: (628 книг)
+                mm = re.search(r"\((\d+)\s*книг", txt)
+                bc = mm.group(1) if mm else "?"
+                aname = " ".join(a_tag.get_text().split())
+                data["authors_found"].append({
+                    "id": author_id,
+                    "name": aname,
+                    "book_count": bc
+                })
+
+    # Книги
+    h3_books = soup.find(lambda t: t.name == "h3" and "Найденные книги" in t.get_text("", strip=True))
+    if h3_books:
+        ul = h3_books.find_next("ul")
+        if ul:
+            for li in ul.find_all("li"):
+                a_tags = li.find_all("a")
+                if not a_tags:
+                    continue
+                raw_title = " ".join(a_tags[0].get_text().split())
+                title_clean = re.sub(r"\([^)]+\)$", "", raw_title).strip()
+                hrefb = a_tags[0].get("href", "")
+                b_id = "???"
+                if "/b/" in hrefb:
+                    b_id = hrefb.split("/b/")[-1]
+
+                # автор(ы)
+                auth_list = []
+                for xx in a_tags[1:]:
+                    nm = " ".join(xx.get_text().split())
+                    if nm.lower() not in ("все",):
+                        auth_list.append(nm)
+                if not auth_list:
+                    auth_list = ["Автор неизвестен"]
+                auth_str = ", ".join(auth_list)
+                data["books_found"].append({
+                    "id": b_id,
+                    "title": title_clean,
+                    "author": auth_str
+                })
+
+    return data
+
+def get_book_details(book_id: str) -> dict:
+    html = fetch_url_with_penalty(f"/b/{book_id}", headers={"User-Agent": "Bot/1.0"})
+    soup = BeautifulSoup(html, "lxml")
+
+    title = "Неизвестно"
+    author = ""
+    annotation = ""
+    year = None
+    cover_url = None
+    formats = set()
+
+    # Заголовок книги
+    h1 = soup.find("h1", class_="title")
+    if h1:
+        t = " ".join(h1.get_text().split())
+        t = re.sub(r"\([^)]+\)$", "", t).strip()
+        title = t
+
+    # Автор – ищем ссылку с href, начинающуюся с "/a/" сразу после заголовка
+    if h1:
+        a_auth = h1.find_next("a", href=lambda x: x and x.startswith("/a/"))
+    else:
+        a_auth = soup.find("a", href=lambda x: x and x.startswith("/a/"))
+    if a_auth:
+        author = " ".join(a_auth.get_text().split())
+
+    # Аннотация
+    anno_div = soup.find("div", id="bookannotation")
+    if anno_div:
+        at = " ".join(anno_div.get_text().split())
+        if len(at) > 2000:
+            at = at[:2000] + "..."
+        annotation = at
+
+    # Год издания – ищем фразу "издание 2016 г." или "издание 2016 года"
+    mm = re.search(r"издание\s+(\d{4})\s*(года|г\.)", html, re.IGNORECASE)
+    if mm:
+        year = mm.group(1)
+
+    # Обложка – ищем <img> с alt="Cover image"
+    cov = soup.find("img", alt="Cover image")
+    if cov and cov.get("src"):
+        raw_src = cov["src"]
+        if raw_src.startswith("/"):
+            mirror_state.sort(key=lambda x: x["penalty"])
+            cover_url = mirror_state[0]["url"] + raw_src
+        else:
+            cover_url = raw_src
+
+    # Форматы – ищем ссылки, содержащие /b/{book_id} и имя формата
+    for link in soup.find_all("a"):
+        hr = link.get("href", "").lower()
+        if f"/b/{book_id}" in hr:
+            if "fb2" in hr:
+                formats.add("fb2")
+            elif "epub" in hr:
+                formats.add("epub")
+            elif "mobi" in hr:
+                formats.add("mobi")
+            elif "pdf" in hr:
+                formats.add("pdf")
+
+    return {
+        "id": book_id,
+        "title": title,
+        "author": author,
+        "annotation": annotation,
+        "year": year,
+        "cover_url": cover_url,
+        "formats": list(formats)
+    }
+
+def download_book(book_id: str, fmt: str) -> bytes:
+    paths = [
+        f"/b/{book_id}/{fmt}",
+        f"/b/{book_id}/download?format={fmt}"
+    ]
+    last_exc = None
+    for path in paths:
+        for attempt in range(2):
+            rate_limit()
+            mirror_state.sort(key=lambda x: x["penalty"])
+            mirror = mirror_state[0]
+            url = mirror["url"] + path
+            try:
+                r = requests.get(url, timeout=10)
+                if r.status_code == 200 and len(r.content) > 0:
+                    mirror["penalty"] = max(0, mirror["penalty"] - 1)
+                    return r.content
+                else:
+                    mirror["penalty"] += 1
+                    last_exc = Exception(f"Download error {r.status_code} {url}")
+            except Exception as e:
+                mirror["penalty"] += 1
+                last_exc = e
+            time.sleep(1 << attempt)
+    raise last_exc or Exception("Cannot download book")
+
+def get_author_books(author_id: str) -> list:
+    """
+    Пытаемся найти книги автора на странице /a/{author_id}. Сначала ищем заголовки с фразами:
+      "Книги автора", "Произведения автора", "Найденные книги", "Список произведений"
+    Если не найдено – выполняем fallback, ищем все ссылки с "/b/" внутри основного контейнера.
+    """
+    html = fetch_url_with_penalty(f"/a/{author_id}", headers={"User-Agent": "Bot/1.0"})
+    soup = BeautifulSoup(html, "lxml")
+
+    out = []
+
+    # Попытка 1: ищем по заголовкам
+    h_section = soup.find(lambda t: t.name in ("h2", "h3") and (
+        "Книги автора" in t.get_text("", strip=True) or
+        "Произведения автора" in t.get_text("", strip=True) or
+        "Найденные книги" in t.get_text("", strip=True) or
+        "Список произведений" in t.get_text("", strip=True)
+    ))
+    if h_section:
+        ul = h_section.find_next("ul")
+        if ul:
+            li_list = ul.find_all("li")
+            for li in li_list:
+                a_tags = li.find_all("a")
+                if not a_tags:
+                    continue
+                raw_title = " ".join(a_tags[0].get_text().split())
+                t_clean = re.sub(r"\([^)]+\)$", "", raw_title).strip()
+                hr = a_tags[0].get("href", "")
+                b_id = hr.split("/b/")[-1] if "/b/" in hr else "???"
+                # Попытка взять имя автора из заголовка страницы
+                h1_author = soup.find("h1")
+                auth_name = " ".join(h1_author.get_text().split()) if h1_author else "Автор"
+                out.append({
+                    "id": b_id,
+                    "title": t_clean,
+                    "author": auth_name
+                })
+        if out:
+            return out
+
+    # Fallback: если стандартная схема не сработала, ищем все ссылки с "/b/" внутри div с id "content"
+    content_div = soup.find("div", id="content")
+    if content_div:
+        seen = set()
+        for link in content_div.find_all("a", href=lambda x: x and x.startswith("/b/")):
+            hr = link.get("href")
+            b_id = hr.split("/b/")[-1]
+            if b_id in seen:
+                continue
+            seen.add(b_id)
+            title = " ".join(link.get_text().split())
+            # Попытка взять имя автора из h1 или из родительского элемента
+            h1_author = soup.find("h1")
+            auth_name = " ".join(h1_author.get_text().split()) if h1_author else "Автор"
+            out.append({
+                "id": b_id,
+                "title": title,
+                "author": auth_name
+            })
+    return out
