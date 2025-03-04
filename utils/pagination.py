@@ -4,6 +4,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from config import SEARCH_RESULTS_PER_PAGE
 from utils.state import get_user_search_data, update_user_search_page
+from utils.utils import send_or_edit_message
 
 logger = logging.getLogger(__name__)
 
@@ -110,4 +111,4 @@ async def pagination_callback_handler(update: Update, context: ContextTypes.DEFA
 
     new_text = build_page_text(user_id)
     new_kb = build_pagination_kb(user_id)
-    await query.edit_message_text(new_text, reply_markup=new_kb)
+    await send_or_edit_message(update, new_text, reply_markup=new_kb)

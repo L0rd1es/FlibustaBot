@@ -19,7 +19,7 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_typing_action(update, context)
         set_user_ephemeral_mode(user_id, "general")
         if update.message:
-            await update.message.reply_text("Следующий поиск будет «общим» (однократно).")
+            await update.message.reply_text("Следующий поиск будет «<b>общим</b>» <i>(однократно)</i>.", parse_mode="HTML")
         else:
             logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: отсутствует объект message в update.")
     except Exception as e:

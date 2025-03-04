@@ -21,7 +21,7 @@ async def book_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await set_typing_action(update, context)
         set_user_ephemeral_mode(user_id, "book")
         if update.message:
-            await update.message.reply_text("Следующий поиск будет выполнен только по книгам (однократно).")
+            await update.message.reply_text("Следующий поиск будет <b>только по книгам</b> <i>(однократно)</i>.", parse_mode="HTML")
         else:
             logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: отсутствует объект message в update.")
     except Exception as e:

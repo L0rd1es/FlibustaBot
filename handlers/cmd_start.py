@@ -18,19 +18,20 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.info(f"Пользователь {user_id} вызвал команду /start")
         await set_typing_action(update, context)
+
         start_text = (
-            "Привет! Я бот для поиска книг на Флибусте.\n\n"
-            "Команды:\n"
-            "/search - Общий поиск (1 раз)\n"
-            "/book - Поиск книг (1 раз)\n"
-            "/author - Поиск авторов (1 раз)\n"
-            "/settings - Настройки формата/режима\n\n"
-            "Просто введи запрос...\n"
-            "Скачать: /download123\n"
-            "Автор: /author123\n"
+            "<b>Привет! Я бот для поиска книг на Флибусте.</b>\n"
+            "━━━━━━━━━━━━━\n\n"
+            "Просто напиши в чат <u>название книги</u> или <u>имя автора</u> и я поищу!\n\n"
+            "<b>Доступные команды:</b>\n"
+            "• <b>Настройки:</b> <i>/settings</i>\n"
+            "• <b>Общий поиск:</b> <i>/search</i>\n"
+            "• <b>Поиск книг:</b> <i>/book</i>\n"
+            "• <b>Поиск авторов:</b> <i>/author</i>\n\n"
+            "━━━━━━━━━━━━━"
         )
         if update.message:
-            await update.message.reply_text(start_text)
+            await update.message.reply_text(start_text, parse_mode="HTML")
         else:
             logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: отсутствует объект message в update.")
     except Exception as e:

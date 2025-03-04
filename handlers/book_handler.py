@@ -19,13 +19,19 @@ async def send_book_details_message(update: Update, context: ContextTypes.DEFAUL
     :param details: Словарь с деталями книги.
     :return: Идентификатор отправленного сообщения.
     """
-    parts = [details.get("title", "Без названия")]
+    parts = []
+    title = details.get("title", "Без названия")
+    parts.append(f"📚 <i><b>{title}</b></i>")  # Заголовок
+
     if details.get("author"):
-        parts.append(f"Автор: {details['author']}")
+        parts.append("━━━━━━━━━━━━━")
+        parts.append(f"👤 <b>Автор:</b> {details['author']}")  # Автор
     if details.get("year"):
-        parts.append(f"Год: {details['year']}")
+        parts.append(f"📅 <b>Год:</b> {details['year']}")  # Год выпуска
     if details.get("annotation"):
-        parts.append(f"\n{details['annotation']}")
+        parts.append("━━━━━━━━━━━━━")
+        parts.append(f"📝 <i>{details['annotation']}</i>")  # Аннотация
+
     caption = "\n".join(parts)
 
     formats = details.get("formats", [])
@@ -119,7 +125,6 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     title = details.get("title", "Без названия")
     author = details.get("author", "Неизвестен")
-    caption = f"{title[:50]}\nАвтор: {author}"
 
     try:
         user_settings = await get_user_settings(query.from_user.id)
@@ -146,7 +151,7 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
 
     chat_id = query.message.chat.id
     try:
-        await context.bot.send_document(chat_id=chat_id, document=file_data, filename=filename, caption=caption)
+        await context.bot.send_document(chat_id=chat_id, document=file_data, filename=filename)
     except Exception as e:
         logger.exception(f"Ошибка при отправке файла {filename} пользователю {chat_id}: {e}")
         try:

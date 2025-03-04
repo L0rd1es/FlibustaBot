@@ -10,6 +10,7 @@ from utils.pagination import build_page_text, build_pagination_kb
 from handlers.author_handler import author_books_command
 from handlers.book_handler import send_book_details_message
 from utils.state import set_author_mapping, set_user_search_data, get_user_ephemeral_mode, clear_user_ephemeral_mode
+from utils.utils import send_or_edit_message
 
 logger = logging.getLogger(__name__)
 
@@ -133,23 +134,26 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text("Ничего не найдено.")
         return
 
-    records = []
+    response_lines = []
     if authors:
-        records.append(f"Найдено авторов: {len(authors)}\n")
+        response_lines.append(f"📖 <b>Найдено авторов:</b> {len(authors)}\n")
         for author in authors:
-            records.append(
-                f"{author['name']} - {author['book_count']} книг\nКниги автора: /author{author['id']}\n"
+            response_lines.append(
+                f"• <b>{author['name']}</b> — {author['book_count']} книг\n"
+                f"  <u>/author{author['id']}</u>\n\n"
             )
     if books:
-        records.append(f"Найдено книг: {len(books)}\n")
+        response_lines.append(f"📚 <b>Найдено книг:</b> {len(books)}\n")
         for book in books:
-            records.append(
-                f"{book['title']}\n{book['author']}\nСкачать: /download{book['id']}\n"
+            response_lines.append(
+                f"• <b>{book['title']}</b>\n"
+                f"  Автор: <i>{book['author']}</i>\n"
+                f"  Скачать: <u>/download{book['id']}</u>\n\n"
             )
 
-    total_pages = (len(records) + SEARCH_RESULTS_PER_PAGE - 1) // SEARCH_RESULTS_PER_PAGE
-    set_user_search_data(user_id, records, total_pages)
+    total_pages = (len(response_lines) + SEARCH_RESULTS_PER_PAGE - 1) // SEARCH_RESULTS_PER_PAGE
+    set_user_search_data(user_id, response_lines, total_pages)
 
     page_text = build_page_text(user_id)
     pagination_keyboard = build_pagination_kb(user_id)
-    await update.message.reply_text(page_text, reply_markup=pagination_keyboard)
+    await send_or_edit_message(update, page_text, reply_markup=pagination_keyboard)
