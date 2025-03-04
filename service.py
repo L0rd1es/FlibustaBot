@@ -1,5 +1,6 @@
 # service.py
 
+import asyncio
 import time
 import requests
 import re
@@ -11,16 +12,16 @@ mirror_state = [
 ]
 last_request_time = 0.0
 
-def rate_limit():
+async def rate_limit():
     global last_request_time
     interval = 1.0 / RATE_LIMIT_RPS
     now = time.time()
     elapsed = now - last_request_time
     if elapsed < interval:
-        time.sleep(interval - elapsed)
+        await asyncio.sleep(interval - elapsed)
     last_request_time = time.time()
 
-def fetch_url_with_penalty(path: str, params=None, headers=None, max_retries=3) -> str:
+async def fetch_url_with_penalty(path: str, params=None, headers=None, max_retries=3) -> str:
     attempt = 0
     delay = 1
     last_exc = None
@@ -29,9 +30,10 @@ def fetch_url_with_penalty(path: str, params=None, headers=None, max_retries=3) 
         mirror_state.sort(key=lambda x: x["penalty"])
         mirror = mirror_state[0]
         url = mirror["url"] + path
-        rate_limit()
+        await rate_limit()
         try:
-            resp = requests.get(url, params=params, headers=headers, timeout=10)
+            # Выполняем блокирующий запрос в отдельном потоке
+            resp = await asyncio.to_thread(requests.get, url, params=params, headers=headers, timeout=10)
             if resp.status_code == 200:
                 mirror["penalty"] = max(0, mirror["penalty"] - 1)
                 return resp.text
@@ -41,11 +43,11 @@ def fetch_url_with_penalty(path: str, params=None, headers=None, max_retries=3) 
         except Exception as e:
             mirror["penalty"] += 1
             last_exc = e
-        time.sleep(delay)
+        await asyncio.sleep(delay)
         delay *= 2
     raise last_exc or Exception("All mirrors failed")
 
-def search_books_and_authors(query: str, mode="general") -> dict:
+async def search_books_and_authors(query: str, mode="general") -> dict:
     params = {"ask": query}
     if mode in ("general", "book"):
         params["chb"] = "on"
@@ -54,7 +56,7 @@ def search_books_and_authors(query: str, mode="general") -> dict:
     if mode == "general":
         params["chs"] = "on"
 
-    html = fetch_url_with_penalty("/booksearch", params=params, headers={"User-Agent": "Bot/1.0"})
+    html = await fetch_url_with_penalty("/booksearch", params=params, headers={"User-Agent": "Bot/1.0"})
     soup = BeautifulSoup(html, "lxml")
 
     data = {
@@ -117,8 +119,8 @@ def search_books_and_authors(query: str, mode="general") -> dict:
 
     return data
 
-def get_book_details(book_id: str) -> dict:
-    html = fetch_url_with_penalty(f"/b/{book_id}", headers={"User-Agent": "Bot/1.0"})
+async def get_book_details(book_id: str) -> dict:
+    html = await fetch_url_with_penalty(f"/b/{book_id}", headers={"User-Agent": "Bot/1.0"})
     soup = BeautifulSoup(html, "lxml")
 
     title = "Неизвестно"
@@ -189,46 +191,41 @@ def get_book_details(book_id: str) -> dict:
         "formats": list(formats)
     }
 
-def download_book(book_id: str, fmt: str) -> bytes:
-    paths = [
-        f"/b/{book_id}/{fmt}",
-        f"/b/{book_id}/download?format={fmt}"
-    ]
+async def download_book(book_id: str, fmt: str) -> bytes:
+    paths = [f"/b/{book_id}/{fmt}", f"/b/{book_id}/download?format={fmt}"]
     last_exc = None
     for path in paths:
         for attempt in range(2):
-            rate_limit()
+            await rate_limit()
             mirror_state.sort(key=lambda x: x["penalty"])
             mirror = mirror_state[0]
             url = mirror["url"] + path
             try:
-                r = requests.get(url, timeout=10)
-                if r.status_code == 200 and len(r.content) > 0:
+                resp = await asyncio.to_thread(requests.get, url, timeout=10)
+                if resp.status_code == 200 and len(resp.content) > 0:
                     mirror["penalty"] = max(0, mirror["penalty"] - 1)
-                    return r.content
+                    return resp.content
                 else:
                     mirror["penalty"] += 1
-                    last_exc = Exception(f"Download error {r.status_code} {url}")
+                    last_exc = Exception(f"Download error {resp.status_code} {url}")
             except Exception as e:
                 mirror["penalty"] += 1
                 last_exc = e
-            time.sleep(1 << attempt)
+            await asyncio.sleep(2 ** attempt)
     raise last_exc or Exception("Cannot download book")
 
-def get_author_books(author_id: str) -> list:
+async def get_author_books(author_id: str, default_author: str = None) -> list:
     """
     Пытаемся найти книги автора на странице /a/{author_id}.
-    Сначала ищем секцию с заголовками, содержащими фразы:
-      "Книги автора", "Произведения автора", "Найденные книги", "Список произведений".
-    Если такая секция не найдена – выполняем fallback, выбирая только ссылки,
-    href которых строго соответствует формату "/b/<digits>".
+    Сначала ищем секцию с заголовками ("Книги автора", "Произведения автора", "Найденные книги", "Список произведений").
+    Если такая секция не найдена – выполняем fallback, выбирая только ссылки, href которых строго соответствует "/b/<digits>".
+    Для имени автора, если default_author передан, используем его.
     """
-    html = fetch_url_with_penalty(f"/a/{author_id}", headers={"User-Agent": "Bot/1.0"})
+    html = await fetch_url_with_penalty(f"/a/{author_id}", headers={"User-Agent": "Bot/1.0"})
     soup = BeautifulSoup(html, "lxml")
     
     out = []
     
-    # Попытка 1: поиск по заголовкам
     h_section = soup.find(lambda t: t.name in ("h2", "h3") and (
         "Книги автора" in t.get_text("", strip=True) or
         "Произведения автора" in t.get_text("", strip=True) or
@@ -246,12 +243,15 @@ def get_author_books(author_id: str) -> list:
                 t_clean = re.sub(r"\([^)]+\)$", "", raw_title).strip()
                 hr = a_tag.get("href", "")
                 b_id = hr.split("/b/")[-1] if "/b/" in hr else "???"
-                h1_author = soup.find("h1")
-                if h1_author:
-                    text_h1 = " ".join(h1_author.get_text().split())
-                    auth_name = text_h1 if "флибуста" not in text_h1.lower() else "Неизвестен"
+                if default_author is not None:
+                    auth_name = default_author
                 else:
-                    auth_name = "Неизвестен"
+                    h1_author = soup.find("h1")
+                    if h1_author:
+                        text_h1 = " ".join(h1_author.get_text().split())
+                        auth_name = text_h1 if "флибуста" not in text_h1.lower() else "Неизвестен"
+                    else:
+                        auth_name = "Неизвестен"
                 out.append({
                     "id": b_id,
                     "title": t_clean,
@@ -260,7 +260,6 @@ def get_author_books(author_id: str) -> list:
         if out:
             return out
 
-    # Fallback: ищем все ссылки с href строго соответствующим шаблону "/b/<digits>"
     links = soup.find_all("a", href=re.compile(r"^/b/\d+$"))
     seen = set()
     for link in links:
@@ -270,12 +269,15 @@ def get_author_books(author_id: str) -> list:
             continue
         seen.add(b_id)
         title = " ".join(link.get_text().split())
-        h1_author = soup.find("h1")
-        if h1_author:
-            text_h1 = " ".join(h1_author.get_text().split())
-            auth_name = text_h1 if "флибуста" not in text_h1.lower() else "Неизвестен"
+        if default_author is not None:
+            auth_name = default_author
         else:
-            auth_name = "Неизвестен"
+            h1_author = soup.find("h1")
+            if h1_author:
+                text_h1 = " ".join(h1_author.get_text().split())
+                auth_name = text_h1 if "флибуста" not in text_h1.lower() else "Неизвестен"
+            else:
+                auth_name = "Неизвестен"
         out.append({
             "id": b_id,
             "title": title,

@@ -1,5 +1,3 @@
-# handlers.py
-
 import logging
 import re
 import requests
@@ -32,41 +30,19 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
+# Глобальное отображение ID автора -> имя автора (из результатов поиска)
+author_mapping = {}
+
 # Одноразовый режим для /search, /book, /author
 user_ephemeral_mode = {}
 
 # Данные для пагинации
 user_search_data = {}
 
-# Храним список последних бот-сообщений для каждого пользователя.
-# Каждый элемент: {"message_id": int, "type": str}
-# Тип: "regular", "beautiful" или "file"
-user_last_bot_msg = {}
-
 # Состояния ConversationHandler для /settings
 SETTINGS_MENU, FORMAT_MENU, MODE_MENU = range(3)
 
-# Функции удаления/очистки заменены на пустые (ничего не делают), т.к. бот больше не удаляет сообщения.
-async def cleanup_user_messages(update: Update):
-    pass
-
-async def cleanup_bot_messages(user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE):
-    pass
-
-# Функция обновления сообщения оставлена, но её можно вызывать только если требуется редактировать вместо отправки нового.
-async def update_bot_message(user_id: int, chat_id: int, context: ContextTypes.DEFAULT_TYPE, new_text: str, reply_markup=None):
-    msg = await context.bot.send_message(
-        chat_id=chat_id,
-        text=new_text,
-        reply_markup=reply_markup
-    )
-    user_last_bot_msg.setdefault(user_id, []).append({
-        "message_id": msg.message_id,
-        "type": "regular"
-    })
-    return msg.message_id
-
-# Отправка chat_action "печатает..."
+# Функция отправки chat_action "печатает..."
 async def set_typing_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
@@ -79,30 +55,17 @@ async def set_typing_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_typing_action(update, context)
     user_ephemeral_mode[update.effective_user.id] = "general"
-    # Не удаляем сообщения
     msg = await update.message.reply_text("Следующий поиск будет «общим» (однократно).")
-    user_last_bot_msg.setdefault(update.effective_user.id, []).append({
-        "message_id": msg.message_id,
-        "type": "regular"
-    })
-
+    
 async def book_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_typing_action(update, context)
     user_ephemeral_mode[update.effective_user.id] = "book"
     msg = await update.message.reply_text("Следующий поиск только по книгам (1 раз).")
-    user_last_bot_msg.setdefault(update.effective_user.id, []).append({
-        "message_id": msg.message_id,
-        "type": "regular"
-    })
-
+    
 async def author_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_typing_action(update, context)
     user_ephemeral_mode[update.effective_user.id] = "author"
     msg = await update.message.reply_text("Следующий поиск только по авторам (1 раз).")
-    user_last_bot_msg.setdefault(update.effective_user.id, []).append({
-        "message_id": msg.message_id,
-        "type": "regular"
-    })
 
 # ==================================================================
 # Команды /start и /help
@@ -120,11 +83,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Скачать: /download123\n"
         "Автор: /author123\n"
     )
-    msg_id = await update_bot_message(update.effective_user.id, update.effective_chat.id, context, text)
-    user_last_bot_msg.setdefault(update.effective_user.id, []).append({
-        "message_id": msg_id,
-        "type": "regular"
-    })
+    await update.message.reply_text(text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_typing_action(update, context)
@@ -137,11 +96,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Скачивание: /download<id>\n"
         "Автор: /author<id>\n"
     )
-    msg_id = await update_bot_message(update.effective_user.id, update.effective_chat.id, context, text)
-    user_last_bot_msg.setdefault(update.effective_user.id, []).append({
-        "message_id": msg_id,
-        "type": "regular"
-    })
+    await update.message.reply_text(text)
 
 # ==================================================================
 # /settings (ConversationHandler)
@@ -174,11 +129,7 @@ async def show_main_settings_menu(user_id: int, update_or_query):
             return
         await query.edit_message_text(text, reply_markup=markup)
     else:
-        msg = await update_or_query.message.reply_text(text, reply_markup=markup)
-        user_last_bot_msg.setdefault(user_id, []).append({
-            "message_id": msg.message_id,
-            "type": "regular"
-        })
+        await update_or_query.message.reply_text(text, reply_markup=markup)
 
 async def settings_main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -321,53 +272,32 @@ async def pagination_callback_handler(update: Update, context: ContextTypes.DEFA
 # ------------------------------------------------------------------
 async def author_books_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_typing_action(update, context)
-    # Не удаляем сообщение пользователя
     text = update.message.text.strip()
     user_id = update.effective_user.id
     m = re.match(r"/author(\d+)$", text)
     if not m:
         msg = await update.message.reply_text("Некорректная команда /author12345")
-        user_last_bot_msg.setdefault(user_id, []).append({
-            "message_id": msg.message_id,
-            "type": "regular"
-        })
         return
     author_id = m.group(1)
+    default_author = author_mapping.get(author_id, "Неизвестен")
     try:
-        bks = get_author_books(author_id)
+        bks = await get_author_books(author_id, default_author=default_author)
     except Exception as e:
         logger.error(e)
         msg = await update.message.reply_text("Не удалось получить книги автора.")
-        user_last_bot_msg.setdefault(user_id, []).append({
-            "message_id": msg.message_id,
-            "type": "regular"
-        })
         return
     if not bks:
         msg = await update.message.reply_text("У автора нет книг или автор не найден.")
-        user_last_bot_msg.setdefault(user_id, []).append({
-            "message_id": msg.message_id,
-            "type": "regular"
-        })
         return
     recs = []
     for b in bks:
-        rec = f"{b['title']}\n{b['author']}\nСкачать: /download{b['id']}\n"
-        recs.append(rec)
+        recs.append(f"{b['title']}\n{b['author']}\nСкачать: /download{b['id']}\n")
     total = len(recs)
     pages = (total + SEARCH_RESULTS_PER_PAGE - 1) // SEARCH_RESULTS_PER_PAGE
-    user_search_data[user_id] = {
-        "records": recs,
-        "page": 1,
-        "pages": pages,
-    }
+    user_search_data[user_id] = {"records": recs, "page": 1, "pages": pages}
     txt = build_page_text(user_id)
     kb = build_pagination_kb(user_id)
-    msg = await update.message.reply_text(txt, reply_markup=kb)
-    user_last_bot_msg.setdefault(user_id, []).append({
-        "message_id": msg.message_id,
-        "type": "regular"
-    })
+    await update.message.reply_text(txt, reply_markup=kb)
 
 # ------------------------------------------------------------------
 # Обработка текстовых сообщений
@@ -377,98 +307,57 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     text = update.message.text.strip()
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-
-    # Не удаляем сообщения пользователя
     with open(STATS_FILE, "a", encoding="utf-8") as f:
         f.write(f"{user_id}:{chat_id} -> {text}\n")
-
     if text.startswith("/download"):
-        await cleanup_bot_messages(user_id, chat_id, context)
         book_id = text.removeprefix("/download").strip()
         if not book_id.isdigit():
             m = await update.message.reply_text("Некорректный ID.")
-            user_last_bot_msg.setdefault(user_id, []).append({
-                "message_id": m.message_id,
-                "type": "regular"
-            })
             return
         try:
-            det = get_book_details(book_id)
+            det = await get_book_details(book_id)
         except Exception as e:
             logger.error(e)
             mm = await update.message.reply_text("Не удалось получить книгу.")
-            user_last_bot_msg.setdefault(user_id, []).append({
-                "message_id": mm.message_id,
-                "type": "regular"
-            })
             return
         st = get_user_settings(user_id)
         pfmt = st["preferred_format"]
         if pfmt and (pfmt in det["formats"]):
             try:
-                file_data = download_book(book_id, pfmt)
-                # Сначала отправляем красивое сообщение с информацией (тип "beautiful")
+                file_data = await download_book(book_id, pfmt)
                 img_msg_id = await send_book_details_message(update, context, det)
-                user_last_bot_msg.setdefault(user_id, []).append({
-                    "message_id": img_msg_id,
-                    "type": "beautiful"
-                })
-                # Затем отправляем файл (тип "file")
-                msg2 = await context.bot.send_document(
+                await context.bot.send_document(
                     chat_id=chat_id,
                     document=file_data,
                     filename=f"{det['title'][:50]}_{book_id}.{pfmt}",
                     caption=f"{det['title']}\nАвтор: {det['author']}"
                 )
-                user_last_bot_msg.setdefault(user_id, []).append({
-                    "message_id": msg2.message_id,
-                    "type": "file"
-                })
             except Exception as e:
                 logger.error(e)
                 mid = await send_book_details_message(update, context, det)
-                user_last_bot_msg.setdefault(user_id, []).append({
-                    "message_id": mid,
-                    "type": "regular"
-                })
         else:
-            mid = await send_book_details_message(update, context, det)
-            user_last_bot_msg.setdefault(user_id, []).append({
-                "message_id": mid,
-                "type": "regular"
-            })
+            await send_book_details_message(update, context, det)
         return
 
     if text.startswith("/author") and text[7:].isdigit():
         await author_books_command(update, context)
         return
 
-    await cleanup_bot_messages(user_id, chat_id, context)
-    ephemeral = user_ephemeral_mode.get(user_id)
-    if ephemeral:
-        user_ephemeral_mode[user_id] = None
-        mode = ephemeral
-    else:
-        st = get_user_settings(user_id)
-        mode = st["preferred_search_mode"] or "general"
     try:
-        data = search_books_and_authors(text, mode)
+        st = get_user_settings(user_id)
+        mode = st["preferred_search_mode"] if st["preferred_search_mode"] else "general"
+        data = await search_books_and_authors(text, mode)
     except Exception as e:
         logger.error(e)
         mm = await update.message.reply_text("Ошибка при поиске.")
-        user_last_bot_msg.setdefault(user_id, []).append({
-            "message_id": mm.message_id,
-            "type": "regular"
-        })
         return
     bks = data["books_found"]
     auts = data["authors_found"]
+    if auts:
+        for a in auts:
+            author_mapping[a["id"]] = a["name"]
     if not bks and not auts:
         mm = await update.message.reply_text("Ничего не найдено.")
-        user_last_bot_msg.setdefault(user_id, []).append({
-            "message_id": mm.message_id,
-            "type": "regular"
-        })
         return
     recs = []
     if auts:
@@ -481,18 +370,10 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             recs.append(f"{b['title']}\n{b['author']}\nСкачать: /download{b['id']}\n")
     total = len(recs)
     pages = (total + SEARCH_RESULTS_PER_PAGE - 1) // SEARCH_RESULTS_PER_PAGE
-    user_search_data[user_id] = {
-        "records": recs,
-        "page": 1,
-        "pages": pages,
-    }
+    user_search_data[user_id] = {"records": recs, "page": 1, "pages": pages}
     txt = build_page_text(user_id)
     kb = build_pagination_kb(user_id)
-    mm = await update.message.reply_text(txt, reply_markup=kb)
-    user_last_bot_msg.setdefault(user_id, []).append({
-        "message_id": mm.message_id,
-        "type": "regular"
-    })
+    await update.message.reply_text(txt, reply_markup=kb)
 
 # ------------------------------------------------------------------
 # Функция для отправки красивого сообщения с кнопками форматов
@@ -542,17 +423,20 @@ async def send_book_details_message(update: Update, context: ContextTypes.DEFAUL
 async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await set_typing_action(update, context)
     query = update.callback_query
-    await query.answer()
+    try:
+        await query.answer()
+    except Exception as e:
+        logger.error(f"Ошибка query.answer(): {e}")
     data = query.data
     _, book_id, fmt = data.split("|")
     try:
-        file_data = download_book(book_id, fmt)
+        file_data = await download_book(book_id, fmt)
     except Exception as e:
         logger.error(e)
         await query.message.reply_text("Ошибка скачивания книги.")
         return
     try:
-        d = get_book_details(book_id)
+        d = await get_book_details(book_id)
         t = d["title"][:50] if d["title"] else "book"
         a = d["author"] or ""
         cpt = f"{t}\nАвтор: {a}"
@@ -560,18 +444,13 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
         t = f"book_{book_id}"
         cpt = t
     filename = f"{t}_{book_id}.{fmt}"
-    await cleanup_bot_messages(query.from_user.id, query.message.chat_id, context)
-    chat_id = query.message.chat_id
-    msg = await context.bot.send_document(
-        chat_id=chat_id,
+    await context.bot.send_document(
+        chat_id=query.message.chat_id,
         document=file_data,
         filename=filename,
         caption=cpt
     )
-    user_last_bot_msg.setdefault(chat_id, []).append({
-        "message_id": msg.message_id,
-        "type": "file"
-    })
 
+    
 async def no_op_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer("")
