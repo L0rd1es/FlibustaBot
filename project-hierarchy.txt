@@ -1,0 +1,23 @@
+FlibustaBot
+├─ .env
+├─ .gitignore
+├─ config.py
+├─ handlers
+│  ├─ author_handler.py
+│  ├─ book_handler.py
+│  ├─ cmd_author.py
+│  ├─ cmd_book.py
+│  ├─ cmd_help.py
+│  ├─ cmd_search.py
+│  ├─ cmd_settings.py
+│  ├─ cmd_start.py
+│  └─ message_handler.py
+├─ main.py
+├─ services
+│  ├─ db.py
+│  └─ service.py
+├─ utils
+│  ├─ chat_actions.py
+│  ├─ pagination.py
+│  ├─ state.py
+│  └─ utils.py

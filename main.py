@@ -14,18 +14,16 @@ nest_asyncio.apply()
 from dotenv import load_dotenv
 load_dotenv()
 
-from datetime import datetime, timedelta
 from logging.handlers import TimedRotatingFileHandler
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from telegram import Update, BotCommand
+from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
-    ConversationHandler,
     filters,
     ContextTypes,
 )
@@ -35,23 +33,20 @@ from config import (
     STATS_FILE,
     SEND_REPORT_TIME,
 )
-from db import init_db
-from service import init_session
+from services.db import init_db
+from services.service import init_session
 
-from handlers import (
-    start_command,
-    help_command,
-    search_command,
-    book_command,
-    author_command,
-    text_message_handler,
-    choose_format_callback,
-    no_op_callback,
-    get_settings_conversation_handler,
-
-    # Пагинация результатов
-    pagination_callback_handler,
-)
+from handlers.cmd_settings import get_settings_conversation_handler
+from handlers.cmd_search import search_command
+from handlers.cmd_author import author_command
+from handlers.cmd_start import start_command
+from handlers.cmd_help import help_command
+from handlers.cmd_book import book_command
+from handlers.message_handler import text_message_handler
+from handlers.message_handler import text_message_handler
+from handlers.book_handler import choose_format_callback
+from utils.pagination import pagination_callback_handler
+from utils.utils import no_op_callback
 
 def setup_logging():
     logger = logging.getLogger()
