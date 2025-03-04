@@ -15,7 +15,6 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from logging.handlers import TimedRotatingFileHandler
-
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from telegram import Update
 from telegram.constants import ParseMode
@@ -27,12 +26,7 @@ from telegram.ext import (
     filters,
     ContextTypes,
 )
-from config import (
-    ADMIN_ID,
-    LOG_FILE,
-    STATS_FILE,
-    SEND_REPORT_TIME,
-)
+from config import ADMIN_ID, LOG_FILE, STATS_FILE, SEND_REPORT_TIME
 from services.db import init_db
 from services.service import init_session
 
@@ -43,10 +37,10 @@ from handlers.cmd_start import start_command
 from handlers.cmd_help import help_command
 from handlers.cmd_book import book_command
 from handlers.message_handler import text_message_handler
-from handlers.message_handler import text_message_handler
 from handlers.book_handler import choose_format_callback
 from utils.pagination import pagination_callback_handler
 from utils.utils import no_op_callback
+from utils.state import cleanup_old_data
 
 def setup_logging():
     logger = logging.getLogger()
@@ -54,7 +48,6 @@ def setup_logging():
 
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
-    # Настройка TimedRotatingFileHandler для ротации логов каждый час
     fh = TimedRotatingFileHandler(LOG_FILE, when="H", interval=1, backupCount=24, encoding="utf-8")
     fh.setLevel(logging.INFO)
     fh.setFormatter(fmt)
@@ -162,7 +155,14 @@ async def main_async():
         minute=minute,
         args=[application],
     )
+    scheduler.add_job(
+        cleanup_old_data,
+        trigger="interval",
+        minutes=10,
+    )
+
     scheduler.start()
+
 
     logging.info("Запуск бота...")
     await application.run_polling()

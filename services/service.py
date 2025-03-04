@@ -16,15 +16,24 @@ rate_limit_lock = asyncio.Lock()
 
 session = None
 
-async def init_session():
+async def init_session() -> None:
+    """
+    Инициализирует глобальную сессию для выполнения HTTP-запросов.
+    """
     global session
     session = aiohttp.ClientSession()
 
-async def close_session():
+async def close_session() -> None:
+    """
+    Закрывает глобальную сессию, если она существует.
+    """
     if session is not None:
         await session.close()
 
-async def rate_limit():
+async def rate_limit() -> None:
+    """
+    Выполняет ограничение скорости запросов, ожидая необходимый интервал между запросами.
+    """
     global last_request_time
     interval = 1.0 / RATE_LIMIT_RPS
     async with rate_limit_lock:
@@ -35,6 +44,21 @@ async def rate_limit():
         last_request_time = time.time()
 
 async def fetch_url_with_penalty(path: str, params=None, headers=None, max_retries=3) -> str:
+    """
+    Запрашивает URL с учетом штрафов для зеркал, повторяя попытки в случае неудачи.
+
+    Args:
+        path (str): Путь запроса, который добавляется к базовому URL зеркала.
+        params (Optional[Dict[str, Any]]): Параметры запроса.
+        headers (Optional[Dict[str, str]]): Заголовки запроса.
+        max_retries (int): Максимальное количество попыток запроса.
+
+    Returns:
+        str: Текст ответа.
+
+    Raises:
+        Exception: Если все попытки запроса завершились неудачно.
+    """
     attempt = 0
     delay = 1
     last_exc = None
@@ -64,6 +88,16 @@ async def fetch_url_with_penalty(path: str, params=None, headers=None, max_retri
     raise last_exc or Exception("All mirrors failed")
 
 async def search_books_and_authors(query: str, mode="general") -> dict:
+    """
+    Ищет книги и авторов по заданному запросу.
+
+    Args:
+        query (str): Поисковый запрос.
+        mode (str, optional): Режим поиска ("general", "book", "author").
+
+    Returns:
+        Dict[str, Any]: Словарь с ключами "books_found" и "authors_found".
+    """
     params = {"ask": query}
     if mode in ("general", "book"):
         params["chb"] = "on"
@@ -80,7 +114,6 @@ async def search_books_and_authors(query: str, mode="general") -> dict:
         "authors_found": []
     }
 
-    # Авторы
     h3_auth = soup.find(lambda t: t.name == "h3" and "Найденные писатели" in t.get_text("", strip=True))
     if h3_auth:
         ul = h3_auth.find_next("ul")
@@ -101,7 +134,6 @@ async def search_books_and_authors(query: str, mode="general") -> dict:
                     "book_count": bc
                 })
 
-    # Книги
     h3_books = soup.find(lambda t: t.name == "h3" and "Найденные книги" in t.get_text("", strip=True))
     if h3_books:
         ul = h3_books.find_next("ul")
@@ -133,6 +165,15 @@ async def search_books_and_authors(query: str, mode="general") -> dict:
     return data
 
 async def get_book_details(book_id: str) -> dict:
+    """
+    Получает детали книги по её идентификатору.
+
+    Args:
+        book_id (str): Идентификатор книги.
+
+    Returns:
+        Dict[str, Any]: Словарь с информацией о книге (название, автор, аннотация, год, URL обложки, форматы).
+    """
     try:
         logger.info(f"Начало получения деталей книги для book_id {book_id}")
         html = await fetch_url_with_penalty(f"/b/{book_id}", headers={"User-Agent": "Bot/1.0"})
@@ -204,44 +245,82 @@ async def get_book_details(book_id: str) -> dict:
         raise
 
 async def download_book(book_id: str, fmt: str) -> bytes:
+    """
+    Скачивает книгу в указанном формате.
+
+    Args:
+        book_id (str): Идентификатор книги.
+        fmt (str): Формат книги (например, "fb2", "epub", "mobi", "pdf").
+
+    Returns:
+        bytes: Содержимое файла книги в виде байтов.
+
+    Raises:
+        Exception: Если скачивание не удалось после всех попыток.
+    """
     paths = [f"/b/{book_id}/{fmt}", f"/b/{book_id}/download?format={fmt}"]
     last_exc = None
+    max_retries = 3
+    timeout_seconds = 20
+
     try:
-        logger.info(f"Начало скачивания книги {book_id} с форматом {fmt}")
+        logger.info(f"Начало скачивания книги {book_id} в формате {fmt}")
+        
         for path in paths:
-            for attempt in range(2):
+            for attempt in range(max_retries):
                 await rate_limit()
                 mirror_state.sort(key=lambda x: x["penalty"])
                 mirror = mirror_state[0]
                 url = mirror["url"] + path
+
                 try:
-                    async with session.get(url, timeout=10) as resp:
+                    async with session.get(url, timeout=timeout_seconds) as resp:
                         if resp.status == 200:
                             content = await resp.read()
                             if content:
                                 mirror["penalty"] = max(0, mirror["penalty"] - 1)
-                                logger.info(f"Скачивание книги успешно завершено для URL: {url}")
+                                logger.info(f"Книга успешно скачана: {url}")
                                 return content
                             else:
                                 mirror["penalty"] += 1
-                                last_exc = Exception(f"Empty content {url}")
-                                logger.error(f"Пустой ответ для URL: {url}")
+                                last_exc = Exception(f"Пустой контент: {url}")
+                                logger.error(f"Сервер вернул пустой файл: {url}")
                         else:
                             mirror["penalty"] += 1
-                            last_exc = Exception(f"Download error {resp.status} {url}")
-                            logger.error(f"Ошибка скачивания, статус {resp.status} для URL: {url}")
+                            last_exc = Exception(f"Ошибка скачивания {resp.status} {url}")
+                            logger.error(f"Ошибка HTTP {resp.status} при скачивании {url}")
+
+                except asyncio.TimeoutError:
+                    mirror["penalty"] += 2
+                    last_exc = Exception(f"Тайм-аут при скачивании: {url}")
+                    logger.error(f"Тайм-аут при скачивании {url}")
+
                 except Exception as e:
-                    mirror["penalty"] += 1
+                    mirror["penalty"] += 2
                     last_exc = e
-                    logger.exception(f"Исключение при скачивании для URL: {url}")
+                    logger.exception(f"Ошибка при скачивании книги {book_id} с {url}")
+
                 await asyncio.sleep(2 ** attempt)
-        logger.info(f"Скачивание книги завершено для book_id {book_id}")
+
+        logger.error(f"Не удалось скачать книгу {book_id} в формате {fmt} после {max_retries} попыток")
     except Exception as e:
-        logger.exception(f"Ошибка в download_book для book_id {book_id} с форматом {fmt}:")
+        logger.exception(f"Фатальная ошибка в download_book для book_id {book_id} с форматом {fmt}")
         raise
-    raise last_exc or Exception("Cannot download book")
+
+    raise last_exc or Exception(f"Не удалось скачать книгу {book_id} в формате {fmt}")
+
 
 async def get_author_books(author_id: str, default_author: str = None) -> list:
+    """
+    Получает список книг автора по его идентификатору.
+
+    Args:
+        author_id (str): Идентификатор автора.
+        default_author (Optional[str], optional): Имя автора по умолчанию, если не найдено в HTML.
+
+    Returns:
+        List[Dict[str, Any]]: Список книг автора, где каждая книга представлена словарем с ключами "id", "title" и "author".
+    """
     try:
         logger.info(f"Начало получения книг автора для author_id {author_id}")
         html = await fetch_url_with_penalty(f"/a/{author_id}", headers={"User-Agent": "Bot/1.0"})

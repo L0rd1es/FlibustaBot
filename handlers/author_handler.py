@@ -25,7 +25,7 @@ async def author_books_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     author_id = match.group(1)
-    default_author = get_author_mapping(author_id)  # Получаем имя автора из state.py
+    default_author = get_author_mapping(author_id)
 
     try:
         books = await get_author_books(author_id, default_author=default_author)
@@ -39,7 +39,7 @@ async def author_books_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     records = [
-        f"{book['title']}\n{book['author']}\nСкачать: /download{book['id']}\n"
+        f"{book.get('title', 'Без названия')}\n{book.get('author', 'Неизвестен')}\nСкачать: /download{book.get('id', 'N/A')}\n"
         for book in books
     ]
 

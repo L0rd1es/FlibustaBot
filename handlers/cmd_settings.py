@@ -1,11 +1,8 @@
-#settings.py
-
 import logging
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from enum import Enum, auto
+from typing import Optional, Union
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.ext import (
     ContextTypes,
     ConversationHandler,
@@ -17,179 +14,298 @@ from utils.chat_actions import set_typing_action
 
 logger = logging.getLogger(__name__)
 
-SETTINGS_MENU, FORMAT_MENU, MODE_MENU, BOOK_NAMING_MENU = range(4)
+class SettingsState(Enum):
+    MAIN_MENU = auto()
+    FORMAT_MENU = auto()
+    MODE_MENU = auto()
+    BOOK_NAMING_MENU = auto()
 
-# ==================================================================
-# /settings (ConversationHandler)
-# ==================================================================
-async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+CALLBACK_SETTINGS_FORMAT = "settings_format"
+CALLBACK_SETTINGS_MODE = "settings_mode"
+CALLBACK_SETTINGS_BOOK_NAMING = "settings_book_naming"
+CALLBACK_SET_FMT = "set_fmt"
+CALLBACK_SET_MODE = "set_mode"
+CALLBACK_SET_BOOK_NAMING = "set_book_naming"
+CALLBACK_BACK_TO_MAIN = "back_to_main"
+
+def build_inline_keyboard(buttons: list[list[InlineKeyboardButton]]) -> InlineKeyboardMarkup:
+    """
+    Формирует и возвращает объект InlineKeyboardMarkup из списка кнопок.
+    """
+    return InlineKeyboardMarkup(buttons)
+
+async def send_or_edit_message(
+    update_or_query: Union[Update, CallbackQuery],
+    text: str,
+    reply_markup: Optional[InlineKeyboardMarkup] = None,
+) -> None:
+    """
+    Отправляет сообщение пользователю: если получен объект Update – отправляет новое сообщение,
+    если получен CallbackQuery – редактирует сообщение.
+    """
+    if hasattr(update_or_query, "callback_query") and update_or_query.callback_query:
+        query: CallbackQuery = update_or_query.callback_query
+        await query.edit_message_text(text, reply_markup=reply_markup)
+    elif isinstance(update_or_query, CallbackQuery):
+        await update_or_query.edit_message_text(text, reply_markup=reply_markup)
+    else:
+        await update_or_query.message.reply_text(text, reply_markup=reply_markup)
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Обработчик команды /settings.
+    """
     await set_typing_action(update, context)
     await show_main_settings_menu(update.effective_user.id, update)
-    return SETTINGS_MENU
+    return SettingsState.MAIN_MENU.value
 
-async def show_main_settings_menu(user_id: int, update_or_query):
-    st = await get_user_settings(user_id)
-    fm = st["preferred_format"] or ""
-    md = st["preferred_search_mode"] or "general"
-    nb = st.get("preferred_book_naming") or "title_author"
+async def show_main_settings_menu(user_id: int, update_or_query: Union[Update, CallbackQuery]) -> None:
+    """
+    Отображает главное меню настроек.
+    """
+    try:
+        user_settings = await get_user_settings(user_id)
+    except Exception as e:
+        logger.error(f"Ошибка получения настроек для пользователя {user_id}: {e}")
+        user_settings = {}
+
+    preferred_format = user_settings.get("preferred_format") or ""
+    preferred_search_mode = user_settings.get("preferred_search_mode") or "general"
+    preferred_book_naming = user_settings.get("preferred_book_naming") or "title_author"
+    
     naming_display = {
         "title": "Название книги.формат",
         "title_id": "Название книги_ID.формат",
         "title_author": "Название книги_Имя автора.формат",
-        "title_author_id": "Название книги_Имя автора_ID.формат"
+        "title_author_id": "Название книги_Имя автора_ID.формат",
     }
-    nb_disp = naming_display.get(nb, "Название книги_Имя автора.формат")
-    
+    book_naming_display = naming_display.get(preferred_book_naming, "Название книги_Имя автора.формат")
+
     text = (
         "НАСТРОЙКИ:\n\n"
-        f"Формат: {fm if fm else 'спрашивать'}\n"
-        f"Режим: {md if md!='general' else 'общий'}\n"
-        f"Названия книг: {nb_disp}\n\n"
+        f"Формат: {preferred_format if preferred_format else 'спрашивать'}\n"
+        f"Режим: {preferred_search_mode if preferred_search_mode != 'general' else 'общий'}\n"
+        f"Названия книг: {book_naming_display}\n\n"
         "Выберите, что меняем:"
     )
-    kb = [
-        [InlineKeyboardButton("Формат", callback_data="settings_format")],
-        [InlineKeyboardButton("Режим поиска", callback_data="settings_mode")],
-        [InlineKeyboardButton("Названия книг", callback_data="settings_book_naming")],
+    keyboard = [
+        [InlineKeyboardButton("Формат", callback_data=CALLBACK_SETTINGS_FORMAT)],
+        [InlineKeyboardButton("Режим поиска", callback_data=CALLBACK_SETTINGS_MODE)],
+        [InlineKeyboardButton("Названия книг", callback_data=CALLBACK_SETTINGS_BOOK_NAMING)],
     ]
-    markup = InlineKeyboardMarkup(kb)
-    if getattr(update_or_query, "callback_query", None):
-        query = update_or_query.callback_query
+    markup = build_inline_keyboard(keyboard)
+
+    if hasattr(update_or_query, "callback_query") and update_or_query.callback_query:
+        query: CallbackQuery = update_or_query.callback_query
         old_text = query.message.text or ""
         if old_text.strip() == text.strip():
             await query.answer("Без изменений")
             return
-        await query.edit_message_text(text, reply_markup=markup)
-    else:
-        await update_or_query.message.reply_text(text, reply_markup=markup)
 
-async def settings_main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_or_edit_message(update_or_query, text, reply_markup=markup)
+
+async def settings_main_menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Обработчик выбора пункта в главном меню настроек.
+    """
     query = update.callback_query
     await query.answer()
     data = query.data
-    if data == "settings_format":
-        await show_format_menu(query.from_user.id, query)
-        return FORMAT_MENU
-    elif data == "settings_mode":
-        await show_mode_menu(query.from_user.id, query)
-        return MODE_MENU
-    elif data == "settings_book_naming":
-        await show_book_naming_menu(query.from_user.id, query)
-        return BOOK_NAMING_MENU
-    return SETTINGS_MENU
 
-async def show_book_naming_menu(user_id: int, query):
-    st = await get_user_settings(user_id)
-    current = st.get("preferred_book_naming") or "title_author"
+    if data == CALLBACK_SETTINGS_FORMAT:
+        await show_format_menu(query.from_user.id, query)
+        return SettingsState.FORMAT_MENU.value
+    elif data == CALLBACK_SETTINGS_MODE:
+        await show_mode_menu(query.from_user.id, query)
+        return SettingsState.MODE_MENU.value
+    elif data == CALLBACK_SETTINGS_BOOK_NAMING:
+        await show_book_naming_menu(query.from_user.id, query)
+        return SettingsState.BOOK_NAMING_MENU.value
+    return SettingsState.MAIN_MENU.value
+
+async def show_book_naming_menu(user_id: int, query: CallbackQuery) -> None:
+    """
+    Отображает меню выбора формата названия книги.
+    """
+    try:
+        user_settings = await get_user_settings(user_id)
+    except Exception as e:
+        logger.error(f"Ошибка получения настроек для пользователя {user_id}: {e}")
+        user_settings = {}
+    current_naming = user_settings.get("preferred_book_naming") or "title_author"
     naming_options = [
         ("Название книги.формат", "title"),
         ("Название книги_ID.формат", "title_id"),
         ("Название книги_Имя автора.формат", "title_author"),
         ("Название книги_Имя автора_ID.формат", "title_author_id"),
     ]
-    text_top = f"Названия книг. Текущий: " \
-               f"{dict(naming_options).get(current, 'Название книги_Имя автора.формат')}\nВыберите вариант:"
-    kb = []
-    for display_text, val in naming_options:
-        btn_text = f"🔘 {display_text}" if current == val else display_text
-        kb.append([InlineKeyboardButton(btn_text, callback_data=f"set_book_naming|{val}")])
-    kb.append([InlineKeyboardButton("Назад", callback_data="back_to_main")])
-    await query.edit_message_text(text_top, reply_markup=InlineKeyboardMarkup(kb))
+    current_display = dict(naming_options).get(current_naming, "Название книги_Имя автора.формат")
+    text_top = f"Названия книг. Текущий: {current_display}\nВыберите вариант:"
+    keyboard = []
+    for display_text, option_value in naming_options:
+        button_text = f"🔘 {display_text}" if current_naming == option_value else display_text
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"{CALLBACK_SET_BOOK_NAMING}|{option_value}")])
+    keyboard.append([InlineKeyboardButton("Назад", callback_data=CALLBACK_BACK_TO_MAIN)])
+    markup = build_inline_keyboard(keyboard)
+    try:
+        await query.edit_message_text(text_top, reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Ошибка редактирования сообщения для book naming: {e}")
 
-async def settings_book_naming_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def settings_book_naming_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Обработчик выбора формата названия книги.
+    """
     query = update.callback_query
     await query.answer()
     data = query.data
     user_id = query.from_user.id
-    if data.startswith("set_book_naming|"):
-        val = data.split("|")[1]
-        await set_user_settings(user_id, preferred_book_naming=val)
+
+    if data.startswith(f"{CALLBACK_SET_BOOK_NAMING}|"):
+        option_value = data.split("|", 1)[1]
+        try:
+            await set_user_settings(user_id, preferred_book_naming=option_value)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения настройки названия книг для пользователя {user_id}: {e}")
         await show_book_naming_menu(user_id, query)
-        return BOOK_NAMING_MENU
-    elif data == "back_to_main":
+        return SettingsState.BOOK_NAMING_MENU.value
+    elif data == CALLBACK_BACK_TO_MAIN:
         await show_main_settings_menu(user_id, update)
-        return SETTINGS_MENU
-    return BOOK_NAMING_MENU
+        return SettingsState.MAIN_MENU.value
 
-async def show_format_menu(user_id: int, query):
-    st = await get_user_settings(user_id)
-    sel = st["preferred_format"] or "ask"
-    display_val = "спрашивать" if sel == "ask" else sel
-    text_top = f"Формат. Текущий: {display_val}\nВыберите формат:"
-    arr = ["спрашивать", "fb2", "epub", "mobi", "pdf"]
-    kb = []
-    for opt in arr:
-        val = "ask" if opt == "спрашивать" else opt
-        text_btn = f"🔘 {opt}" if val == sel else opt
-        kb.append([InlineKeyboardButton(text_btn, callback_data=f"set_fmt|{opt}")])
-    kb.append([InlineKeyboardButton("Назад", callback_data="back_to_main")])
-    await query.edit_message_text(text_top, reply_markup=InlineKeyboardMarkup(kb))
+    return SettingsState.BOOK_NAMING_MENU.value
 
-async def show_mode_menu(user_id: int, query):
-    st = await get_user_settings(user_id)
-    sel = st["preferred_search_mode"] or "general"
-    text_top = f"Режим. Текущий: {sel if sel!='general' else 'общий'}\nВыберите режим:"
-    modes = [("общий", "general"), ("только книги", "book"), ("только авторы", "author")]
-    kb = []
-    for (title, val) in modes:
-        tbtn = f"🔘 {title}" if val == sel else title
-        kb.append([InlineKeyboardButton(tbtn, callback_data=f"set_mode|{val}")])
-    kb.append([InlineKeyboardButton("Назад", callback_data="back_to_main")])
+async def show_format_menu(user_id: int, query: CallbackQuery) -> None:
+    """
+    Отображает меню выбора формата.
+    """
+    try:
+        user_settings = await get_user_settings(user_id)
+    except Exception as e:
+        logger.error(f"Ошибка получения настроек для пользователя {user_id}: {e}")
+        user_settings = {}
+    selected_format = user_settings.get("preferred_format") or "ask"
+    display_value = "спрашивать" if selected_format == "ask" else selected_format
+    text_top = f"Формат. Текущий: {display_value}\nВыберите формат:"
+    format_options = ["спрашивать", "fb2", "epub", "mobi", "pdf"]
+    keyboard = []
+    for option in format_options:
+        option_value = "ask" if option == "спрашивать" else option
+        button_text = f"🔘 {option}" if option_value == selected_format else option
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"{CALLBACK_SET_FMT}|{option}")])
+    keyboard.append([InlineKeyboardButton("Назад", callback_data=CALLBACK_BACK_TO_MAIN)])
+    markup = build_inline_keyboard(keyboard)
+    try:
+        await query.edit_message_text(text_top, reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Ошибка редактирования сообщения для формата: {e}")
+
+async def show_mode_menu(user_id: int, query: CallbackQuery) -> None:
+    """
+    Отображает меню выбора режима поиска.
+    """
+    try:
+        user_settings = await get_user_settings(user_id)
+    except Exception as e:
+        logger.error(f"Ошибка получения настроек для пользователя {user_id}: {e}")
+        user_settings = {}
+    selected_mode = user_settings.get("preferred_search_mode") or "general"
+    text_top = f"Режим. Текущий: {selected_mode if selected_mode != 'general' else 'общий'}\nВыберите режим:"
+    mode_options = [("общий", "general"), ("только книги", "book"), ("только авторы", "author")]
+    keyboard = []
+    for display_text, option_value in mode_options:
+        button_text = f"🔘 {display_text}" if option_value == selected_mode else display_text
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"{CALLBACK_SET_MODE}|{option_value}")])
+    keyboard.append([InlineKeyboardButton("Назад", callback_data=CALLBACK_BACK_TO_MAIN)])
+    markup = build_inline_keyboard(keyboard)
+
     old_text = query.message.text or ""
     if old_text.strip() == text_top.strip():
         await query.answer("Без изменений")
         return
-    await query.edit_message_text(text_top, reply_markup=InlineKeyboardMarkup(kb))
 
-async def settings_format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        await query.edit_message_text(text_top, reply_markup=markup)
+    except Exception as e:
+        logger.error(f"Ошибка редактирования сообщения для режима поиска: {e}")
+
+async def settings_format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Обработчик выбора формата.
+    """
     query = update.callback_query
     await query.answer()
     data = query.data
     user_id = query.from_user.id
-    if data.startswith("set_fmt|"):
-        val = data.split("|")[1]
-        new_val = "ask" if val == "спрашивать" else val
-        await set_user_settings(user_id, preferred_format=new_val)
+
+    if data.startswith(f"{CALLBACK_SET_FMT}|"):
+        option_value = data.split("|", 1)[1]
+        new_format = "ask" if option_value == "спрашивать" else option_value
+        try:
+            await set_user_settings(user_id, preferred_format=new_format)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения формата для пользователя {user_id}: {e}")
         await show_format_menu(user_id, query)
-        return FORMAT_MENU
-    elif data == "back_to_main":
+        return SettingsState.FORMAT_MENU.value
+    elif data == CALLBACK_BACK_TO_MAIN:
         await show_main_settings_menu(user_id, update)
-        return SETTINGS_MENU
-    return FORMAT_MENU
+        return SettingsState.MAIN_MENU.value
 
-async def settings_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return SettingsState.FORMAT_MENU.value
+
+async def settings_mode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """
+    Обработчик выбора режима поиска.
+    """
     query = update.callback_query
     await query.answer()
     data = query.data
     user_id = query.from_user.id
-    if data.startswith("set_mode|"):
-        val = data.split("|")[1]
-        await set_user_settings(user_id, preferred_search_mode=val)
-        await show_mode_menu(user_id, query)
-        return MODE_MENU
-    elif data == "back_to_main":
-        await show_main_settings_menu(user_id, update)
-        return SETTINGS_MENU
-    return MODE_MENU
 
-def get_settings_conversation_handler():
+    if data.startswith(f"{CALLBACK_SET_MODE}|"):
+        option_value = data.split("|", 1)[1]
+        try:
+            await set_user_settings(user_id, preferred_search_mode=option_value)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения режима поиска для пользователя {user_id}: {e}")
+        await show_mode_menu(user_id, query)
+        return SettingsState.MODE_MENU.value
+    elif data == CALLBACK_BACK_TO_MAIN:
+        await show_main_settings_menu(user_id, update)
+        return SettingsState.MAIN_MENU.value
+
+    return SettingsState.MODE_MENU.value
+
+def get_settings_conversation_handler() -> ConversationHandler:
+    """
+    Возвращает ConversationHandler для команды /settings.
+    """
     return ConversationHandler(
         entry_points=[CommandHandler("settings", settings_command)],
         states={
-            SETTINGS_MENU: [
-                CallbackQueryHandler(settings_main_menu_callback, pattern=r"^(settings_format|settings_mode|settings_book_naming)$")
+            SettingsState.MAIN_MENU.value: [
+                CallbackQueryHandler(
+                    settings_main_menu_callback,
+                    pattern=f"^({CALLBACK_SETTINGS_FORMAT}|{CALLBACK_SETTINGS_MODE}|{CALLBACK_SETTINGS_BOOK_NAMING})$",
+                )
             ],
-            FORMAT_MENU: [
-                CallbackQueryHandler(settings_format_callback, pattern=r"^(set_fmt\|.*|back_to_main)$")
+            SettingsState.FORMAT_MENU.value: [
+                CallbackQueryHandler(
+                    settings_format_callback, pattern=f"^({CALLBACK_SET_FMT}\|.*|{CALLBACK_BACK_TO_MAIN})$"
+                )
             ],
-            MODE_MENU: [
-                CallbackQueryHandler(settings_mode_callback, pattern=r"^(set_mode\|.*|back_to_main)$")
+            SettingsState.MODE_MENU.value: [
+                CallbackQueryHandler(
+                    settings_mode_callback, pattern=f"^({CALLBACK_SET_MODE}\|.*|{CALLBACK_BACK_TO_MAIN})$"
+                )
             ],
-            BOOK_NAMING_MENU: [
-                CallbackQueryHandler(settings_book_naming_callback, pattern=r"^(set_book_naming\|.*|back_to_main)$")
+            SettingsState.BOOK_NAMING_MENU.value: [
+                CallbackQueryHandler(
+                    settings_book_naming_callback, pattern=f"^({CALLBACK_SET_BOOK_NAMING}\|.*|{CALLBACK_BACK_TO_MAIN})$"
+                )
             ],
         },
         fallbacks=[],
         allow_reentry=True,
-        per_message=False
+        per_message=False,
     )
