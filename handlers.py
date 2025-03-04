@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import re
 import requests
@@ -42,12 +43,51 @@ user_search_data = {}
 # Состояния ConversationHandler для /settings
 SETTINGS_MENU, FORMAT_MENU, MODE_MENU = range(3)
 
+# ==================================================================
+# Обработка chat_actions
+# ==================================================================
 # Функция отправки chat_action "печатает..."
 async def set_typing_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_chat_action(
         chat_id=update.effective_chat.id,
         action=ChatAction.TYPING
     )
+
+# Функция отправки chat_action "загружает документ..."
+async def set_upload_document_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_chat_action(
+        chat_id=update.effective_chat.id,
+        action=ChatAction.UPLOAD_DOCUMENT
+    )
+
+async def periodic_chat_action(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, interval: float, stop_event: asyncio.Event):
+    """
+    Периодически отправляет заданный chat action, пока не установлен stop_event.
+    """
+    while not stop_event.is_set():
+        await context.bot.send_chat_action(
+            chat_id=update.effective_chat.id,
+            action=action
+        )
+        try:
+            # Ждем interval секунд или до установки stop_event
+            await asyncio.wait_for(stop_event.wait(), timeout=interval)
+        except asyncio.TimeoutError:
+            continue
+
+async def run_with_periodic_action(coro, update: Update, context: ContextTypes.DEFAULT_TYPE, action: str = ChatAction.TYPING, interval: float = 4):
+    """
+    Запускает корутину coro параллельно с периодическим обновлением chat action.
+    Как только coro завершается, периодическое обновление останавливается.
+    """
+    stop_event = asyncio.Event()
+    periodic_task = asyncio.create_task(periodic_chat_action(update, context, action, interval, stop_event))
+    try:
+        result = await coro
+        return result
+    finally:
+        stop_event.set()
+        await periodic_task
 
 # ==================================================================
 # Команды /search, /book, /author
@@ -107,7 +147,7 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SETTINGS_MENU
 
 async def show_main_settings_menu(user_id: int, update_or_query):
-    st = get_user_settings(user_id)
+    st = await get_user_settings(user_id)
     fm = st["preferred_format"] or ""
     md = st["preferred_search_mode"] or "general"
     text = (
@@ -144,7 +184,7 @@ async def settings_main_menu_callback(update: Update, context: ContextTypes.DEFA
     return SETTINGS_MENU
 
 async def show_format_menu(user_id: int, query):
-    st = get_user_settings(user_id)
+    st = await get_user_settings(user_id)
     sel = st["preferred_format"]
     display_val = "спрашивать" if sel == "ask" else (sel or "спрашивать")
     text_top = f"Формат. Текущий: {display_val}\nВыберите формат:"
@@ -158,7 +198,7 @@ async def show_format_menu(user_id: int, query):
     await query.edit_message_text(text_top, reply_markup=InlineKeyboardMarkup(kb))
 
 async def show_mode_menu(user_id: int, query):
-    st = get_user_settings(user_id)
+    st = await get_user_settings(user_id)
     sel = st["preferred_search_mode"] or "general"
     text_top = f"Режим. Текущий: {sel if sel!='general' else 'общий'}\nВыберите режим:"
     modes = [("общий", "general"), ("только книги", "book"), ("только авторы", "author")]
@@ -181,7 +221,7 @@ async def settings_format_callback(update: Update, context: ContextTypes.DEFAULT
     if data.startswith("set_fmt|"):
         val = data.split("|")[1]
         new_val = "ask" if val == "спрашивать" else val
-        set_user_settings(user_id, preferred_format=new_val)
+        await set_user_settings(user_id, preferred_format=new_val)
         await show_format_menu(user_id, query)
         return FORMAT_MENU
     elif data == "back_to_main":
@@ -196,7 +236,7 @@ async def settings_mode_callback(update: Update, context: ContextTypes.DEFAULT_T
     user_id = query.from_user.id
     if data.startswith("set_mode|"):
         val = data.split("|")[1]
-        set_user_settings(user_id, preferred_search_mode=val)
+        await set_user_settings(user_id, preferred_search_mode=val)
         await show_mode_menu(user_id, query)
         return MODE_MENU
     elif data == "back_to_main":
@@ -250,7 +290,6 @@ def build_pagination_kb(user_id: int):
     return InlineKeyboardMarkup([row])
 
 async def pagination_callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await set_typing_action(update, context)
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -315,12 +354,15 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             m = await update.message.reply_text("Некорректный ID.")
             return
         try:
-            det = await get_book_details(book_id)
+            det = await run_with_periodic_action(
+                get_book_details(book_id), update, context,
+                action=ChatAction.TYPING, interval=4
+            )
         except Exception as e:
             logger.error(e)
             mm = await update.message.reply_text("Не удалось получить книгу.")
             return
-        st = get_user_settings(user_id)
+        st = await get_user_settings(user_id)
         pfmt = st["preferred_format"]
         if pfmt and (pfmt in det["formats"]):
             try:
@@ -344,7 +386,7 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     try:
-        st = get_user_settings(user_id)
+        st = await get_user_settings(user_id)
         mode = st["preferred_search_mode"] if st["preferred_search_mode"] else "general"
         data = await search_books_and_authors(text, mode)
     except Exception as e:
@@ -421,7 +463,7 @@ async def send_book_details_message(update: Update, context: ContextTypes.DEFAUL
 # Обработка inline-кнопок для выбора формата
 # ------------------------------------------------------------------
 async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await set_typing_action(update, context)
+    await set_upload_document_action(update, context)
     query = update.callback_query
     try:
         await query.answer()
@@ -430,7 +472,13 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
     _, book_id, fmt = data.split("|")
     try:
-        file_data = await download_book(book_id, fmt)
+        file_data = await run_with_periodic_action(
+            download_book(book_id, fmt),
+            update,
+            context,
+            action=ChatAction.UPLOAD_DOCUMENT,
+            interval=4
+        )
     except Exception as e:
         logger.error(e)
         await query.message.reply_text("Ошибка скачивания книги.")

@@ -86,7 +86,7 @@ async def send_logs_to_admin(context):
 async def main_async():
     setup_logging()
     logging.info("Инициализация БД...")
-    init_db()
+    await init_db()
 
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_TOKEN:
