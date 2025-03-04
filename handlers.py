@@ -558,7 +558,7 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
             get_book_details(book_id),
             update,
             context,
-            action=ChatAction.TYPING,
+            action=ChatAction.UPLOAD_DOCUMENT,
             interval=4
         )
         logger.info(f"Операция получения деталей книги (inline) завершена для book_id {book_id}")
