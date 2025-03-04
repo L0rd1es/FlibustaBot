@@ -14,7 +14,6 @@ mirror_state = [{"url": m, "penalty": 0} for m in FLIBUSTA_MIRRORS]
 last_request_time = 0.0
 rate_limit_lock = asyncio.Lock()
 
-# Глобальная переменная session (будет инициализирована позже)
 session = None
 
 async def init_session():

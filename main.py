@@ -139,28 +139,18 @@ async def main_async():
     ]
     await application.bot.set_my_commands(bot_commands)
 
-    # ConversationHandler для /settings
     settings_conv = get_settings_conversation_handler()
     application.add_handler(settings_conv)
-
-    # Остальные команды
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("search", search_command))
     application.add_handler(CommandHandler("book", book_command))
     application.add_handler(CommandHandler("author", author_command))
-
-    # Пагинация (перелистывание)
     application.add_handler(CallbackQueryHandler(pagination_callback_handler, pattern=r"^pagination\|.*"))
-
-    # Inline-кнопки для скачивания
     application.add_handler(CallbackQueryHandler(choose_format_callback, pattern=r"^choose_format\|"))
     application.add_handler(CallbackQueryHandler(no_op_callback, pattern=r"^no-op$"))
-
-    # Текстовые (включая /downloadXXX, /authorXXX, обычный поиск)
     application.add_handler(MessageHandler(filters.TEXT | filters.COMMAND, text_message_handler))
 
-    # Планируем отправку логов админу
     try:
         hh, mm = SEND_REPORT_TIME.split(":")
         hour = int(hh)

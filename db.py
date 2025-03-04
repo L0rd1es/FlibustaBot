@@ -11,7 +11,6 @@ CREATE TABLE IF NOT EXISTS user_settings (
 );
 """
 
-# Простой пул соединений на основе asyncio.Queue
 class DBPool:
     def __init__(self, db_path: str, pool_size: int = 5):
         self.db_path = db_path
@@ -21,7 +20,6 @@ class DBPool:
     async def init_pool(self):
         for _ in range(self.pool_size):
             conn = await aiosqlite.connect(self.db_path)
-            # Можно настроить режим работы (например, row_factory) здесь
             await self._pool.put(conn)
 
     async def get(self):
@@ -35,15 +33,12 @@ class DBPool:
             conn = await self._pool.get()
             await conn.close()
 
-# Создаём глобальный пул (например, размер 5)
 db_pool = DBPool(DB_PATH, pool_size=5)
 
 async def init_db():
-    # Инициализируем базу данных (создаем таблицы)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.executescript(INIT_SCRIPT)
         await db.commit()
-    # Инициализируем пул соединений
     await db_pool.init_pool()
 
 async def get_user_settings(user_id: int) -> dict:

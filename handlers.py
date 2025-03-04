@@ -31,16 +31,10 @@ from config import (
 
 logger = logging.getLogger(__name__)
 
-# Глобальное отображение ID автора -> имя автора (из результатов поиска)
 author_mapping = {}
-
-# Одноразовый режим для /search, /book, /author
 user_ephemeral_mode = {}
-
-# Данные для пагинации
 user_search_data = {}
 
-# Состояния ConversationHandler для /settings
 SETTINGS_MENU, FORMAT_MENU, MODE_MENU, BOOK_NAMING_MENU = range(4)
 
 # ==================================================================
@@ -60,26 +54,21 @@ async def set_upload_document_action(update: Update, context: ContextTypes.DEFAU
         action=ChatAction.UPLOAD_DOCUMENT
     )
 
+# Периодически отправляет заданный chat action, пока не установлен stop_event.
 async def periodic_chat_action(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, interval: float, stop_event: asyncio.Event):
-    """
-    Периодически отправляет заданный chat action, пока не установлен stop_event.
-    """
     while not stop_event.is_set():
         await context.bot.send_chat_action(
             chat_id=update.effective_chat.id,
             action=action
         )
         try:
-            # Ждем interval секунд или до установки stop_event
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
         except asyncio.TimeoutError:
             continue
 
+# Запускает корутину coro параллельно с периодическим обновлением chat action.
+# Как только coro завершается, периодическое обновление останавливается.
 async def run_with_periodic_action(coro, update: Update, context: ContextTypes.DEFAULT_TYPE, action: str = ChatAction.TYPING, interval: float = 4):
-    """
-    Запускает корутину coro параллельно с периодическим обновлением chat action.
-    Как только coro завершается, периодическое обновление останавливается.
-    """
     stop_event = asyncio.Event()
     periodic_task = asyncio.create_task(periodic_chat_action(update, context, action, interval, stop_event))
     try:
@@ -151,7 +140,6 @@ async def show_main_settings_menu(user_id: int, update_or_query):
     fm = st["preferred_format"] or ""
     md = st["preferred_search_mode"] or "general"
     nb = st.get("preferred_book_naming") or "title_author"
-    # Можно отобразить читаемое название:
     naming_display = {
         "title": "Название книги.формат",
         "title_id": "Название книги_ID.формат",
@@ -313,6 +301,7 @@ def get_settings_conversation_handler():
         allow_reentry=True,
         per_message=False
     )
+
 # ------------------------------------------------------------------
 # Пагинация
 # ------------------------------------------------------------------
@@ -535,7 +524,6 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
     data = query.data
     _, book_id, fmt = data.split("|")
     
-    # Попытка скачать книгу
     try:
         logger.info(f"Начало операции скачивания книги (inline) для book_id {book_id}")
         file_data = await run_with_periodic_action(
@@ -551,7 +539,6 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
         await query.message.reply_text("Ошибка скачивания книги.")
         return
 
-    # Попытка получить детали книги
     try:
         logger.info(f"Начало операции получения деталей книги (inline) для book_id {book_id}")
         d = await run_with_periodic_action(
@@ -566,13 +553,10 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
         logger.exception("Ошибка при получении деталей книги через inline-кнопку:")
         d = {"title": f"book_{book_id}", "author": ""}
 
-    # Формирование подписи
     title = d.get("title") or "Без названия"
     author = d.get("author") or "Неизвестен"
     caption = f"{title[:50]}\nАвтор: {author}"
     
-    # Получаем настройки пользователя для формирования имени файла
-    from db import get_user_settings  # если не импортировано ранее
     st = await get_user_settings(query.from_user.id)
     naming = st.get("preferred_book_naming") or "title_author"
     if naming == "title":
@@ -595,13 +579,13 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
         caption=caption
     )
 
+# ------------------------------------------------------------------
+# Вспомогательные функции
+# ------------------------------------------------------------------
 async def no_op_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer("")
 
+# Удаляет недопустимые символы для имени файла и обрезает лишние пробелы.
 def sanitize_filename(name: str) -> str:
-    """
-    Удаляет недопустимые символы для имени файла и обрезает лишние пробелы.
-    """
-    # Удаляем символы, которые нельзя использовать в именах файлов
     name = re.sub(r'[\\/*?:"<>|]', "", name)
     return name.strip()
