@@ -27,6 +27,8 @@ from config import (
     SEND_REPORT_TIME,
 )
 from db import init_db
+from service import init_session
+
 from handlers import (
     start_command,
     help_command,
@@ -87,6 +89,7 @@ async def main_async():
     setup_logging()
     logging.info("Инициализация БД...")
     await init_db()
+    await init_session() 
 
     TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     if not TELEGRAM_TOKEN:

@@ -41,7 +41,7 @@ user_ephemeral_mode = {}
 user_search_data = {}
 
 # Состояния ConversationHandler для /settings
-SETTINGS_MENU, FORMAT_MENU, MODE_MENU = range(3)
+SETTINGS_MENU, FORMAT_MENU, MODE_MENU, BOOK_NAMING_MENU = range(4)
 
 # ==================================================================
 # Обработка chat_actions
@@ -150,15 +150,27 @@ async def show_main_settings_menu(user_id: int, update_or_query):
     st = await get_user_settings(user_id)
     fm = st["preferred_format"] or ""
     md = st["preferred_search_mode"] or "general"
+    nb = st.get("preferred_book_naming") or "title_author"
+    # Можно отобразить читаемое название:
+    naming_display = {
+        "title": "Название книги.формат",
+        "title_id": "Название книги_ID.формат",
+        "title_author": "Название книги_Имя автора.формат",
+        "title_author_id": "Название книги_Имя автора_ID.формат"
+    }
+    nb_disp = naming_display.get(nb, "Название книги_Имя автора.формат")
+    
     text = (
         "НАСТРОЙКИ:\n\n"
         f"Формат: {fm if fm else 'спрашивать'}\n"
-        f"Режим: {md if md!='general' else 'общий'}\n\n"
+        f"Режим: {md if md!='general' else 'общий'}\n"
+        f"Названия книг: {nb_disp}\n\n"
         "Выберите, что меняем:"
     )
     kb = [
         [InlineKeyboardButton("Формат", callback_data="settings_format")],
         [InlineKeyboardButton("Режим поиска", callback_data="settings_mode")],
+        [InlineKeyboardButton("Названия книг", callback_data="settings_book_naming")],
     ]
     markup = InlineKeyboardMarkup(kb)
     if getattr(update_or_query, "callback_query", None):
@@ -181,12 +193,48 @@ async def settings_main_menu_callback(update: Update, context: ContextTypes.DEFA
     elif data == "settings_mode":
         await show_mode_menu(query.from_user.id, query)
         return MODE_MENU
+    elif data == "settings_book_naming":
+        await show_book_naming_menu(query.from_user.id, query)
+        return BOOK_NAMING_MENU
     return SETTINGS_MENU
+
+async def show_book_naming_menu(user_id: int, query):
+    st = await get_user_settings(user_id)
+    current = st.get("preferred_book_naming") or "title_author"
+    naming_options = [
+        ("Название книги.формат", "title"),
+        ("Название книги_ID.формат", "title_id"),
+        ("Название книги_Имя автора.формат", "title_author"),
+        ("Название книги_Имя автора_ID.формат", "title_author_id"),
+    ]
+    text_top = f"Названия книг. Текущий: " \
+               f"{dict(naming_options).get(current, 'Название книги_Имя автора.формат')}\nВыберите вариант:"
+    kb = []
+    for display_text, val in naming_options:
+        btn_text = f"🔘 {display_text}" if current == val else display_text
+        kb.append([InlineKeyboardButton(btn_text, callback_data=f"set_book_naming|{val}")])
+    kb.append([InlineKeyboardButton("Назад", callback_data="back_to_main")])
+    await query.edit_message_text(text_top, reply_markup=InlineKeyboardMarkup(kb))
+
+async def settings_book_naming_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    user_id = query.from_user.id
+    if data.startswith("set_book_naming|"):
+        val = data.split("|")[1]
+        await set_user_settings(user_id, preferred_book_naming=val)
+        await show_book_naming_menu(user_id, query)
+        return BOOK_NAMING_MENU
+    elif data == "back_to_main":
+        await show_main_settings_menu(user_id, update)
+        return SETTINGS_MENU
+    return BOOK_NAMING_MENU
 
 async def show_format_menu(user_id: int, query):
     st = await get_user_settings(user_id)
-    sel = st["preferred_format"]
-    display_val = "спрашивать" if sel == "ask" else (sel or "спрашивать")
+    sel = st["preferred_format"] or "ask"
+    display_val = "спрашивать" if sel == "ask" else sel
     text_top = f"Формат. Текущий: {display_val}\nВыберите формат:"
     arr = ["спрашивать", "fb2", "epub", "mobi", "pdf"]
     kb = []
@@ -249,7 +297,7 @@ def get_settings_conversation_handler():
         entry_points=[CommandHandler("settings", settings_command)],
         states={
             SETTINGS_MENU: [
-                CallbackQueryHandler(settings_main_menu_callback, pattern=r"^(settings_format|settings_mode)$")
+                CallbackQueryHandler(settings_main_menu_callback, pattern=r"^(settings_format|settings_mode|settings_book_naming)$")
             ],
             FORMAT_MENU: [
                 CallbackQueryHandler(settings_format_callback, pattern=r"^(set_fmt\|.*|back_to_main)$")
@@ -257,12 +305,14 @@ def get_settings_conversation_handler():
             MODE_MENU: [
                 CallbackQueryHandler(settings_mode_callback, pattern=r"^(set_mode\|.*|back_to_main)$")
             ],
+            BOOK_NAMING_MENU: [
+                CallbackQueryHandler(settings_book_naming_callback, pattern=r"^(set_book_naming\|.*|back_to_main)$")
+            ],
         },
         fallbacks=[],
         allow_reentry=True,
         per_message=False
     )
-
 # ------------------------------------------------------------------
 # Пагинация
 # ------------------------------------------------------------------
@@ -354,19 +404,29 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             m = await update.message.reply_text("Некорректный ID.")
             return
         try:
+            logger.info(f"Начало операции получения деталей книги для book_id {book_id}")
             det = await run_with_periodic_action(
                 get_book_details(book_id), update, context,
                 action=ChatAction.TYPING, interval=4
             )
+            logger.info(f"Операция получения деталей книги завершена для book_id {book_id}")
         except Exception as e:
-            logger.error(e)
-            mm = await update.message.reply_text("Не удалось получить книгу.")
+            logger.exception("Ошибка при получении деталей книги:")
+            await update.message.reply_text("Не удалось получить книгу.")
             return
         st = await get_user_settings(user_id)
         pfmt = st["preferred_format"]
         if pfmt and (pfmt in det["formats"]):
             try:
-                file_data = await download_book(book_id, pfmt)
+                logger.info(f"Начало операции скачивания книги для book_id {book_id} с форматом {pfmt}")
+                file_data = await run_with_periodic_action(
+                    download_book(book_id, pfmt),
+                    update,
+                    context,
+                    action=ChatAction.UPLOAD_DOCUMENT,
+                    interval=4
+                )
+                logger.info(f"Операция скачивания книги завершена для book_id {book_id}")
                 img_msg_id = await send_book_details_message(update, context, det)
                 await context.bot.send_document(
                     chat_id=chat_id,
@@ -375,8 +435,8 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
                     caption=f"{det['title']}\nАвтор: {det['author']}"
                 )
             except Exception as e:
-                logger.error(e)
-                mid = await send_book_details_message(update, context, det)
+                logger.exception("Ошибка при скачивании книги:")
+                await send_book_details_message(update, context, det)
         else:
             await send_book_details_message(update, context, det)
         return
@@ -390,8 +450,8 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         mode = st["preferred_search_mode"] if st["preferred_search_mode"] else "general"
         data = await search_books_and_authors(text, mode)
     except Exception as e:
-        logger.error(e)
-        mm = await update.message.reply_text("Ошибка при поиске.")
+        logger.exception("Ошибка при поиске книг и авторов:")
+        await update.message.reply_text("Ошибка при поиске.")
         return
     bks = data["books_found"]
     auts = data["authors_found"]
@@ -430,20 +490,22 @@ async def send_book_details_message(update: Update, context: ContextTypes.DEFAUL
     if details.get("annotation"):
         parts.append(f"\n{details['annotation']}")
     cap = "\n".join(parts)
+
     fmts = details.get("formats", [])
     if fmts:
         row = [InlineKeyboardButton(f, callback_data=f"choose_format|{details['id']}|{f}") for f in fmts]
         kb = InlineKeyboardMarkup([row])
     else:
-        kb = None
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Отсутствуют поддерживаемые форматы", callback_data="no-op")]])
+
     cover = None
     if details.get("cover_url"):
         try:
             r = requests.get(details["cover_url"], timeout=10)
             if r.status_code == 200:
                 cover = r.content
-        except:
-            pass
+        except Exception as e:
+            logging.exception("Ошибка при получении обложки:", exc_info=e)
     if cover:
         msg = await update.message.reply_photo(
             photo=cover,
@@ -468,10 +530,14 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
     try:
         await query.answer()
     except Exception as e:
-        logger.error(f"Ошибка query.answer(): {e}")
+        logger.exception("Ошибка при вызове query.answer():")
+
     data = query.data
     _, book_id, fmt = data.split("|")
+    
+    # Попытка скачать книгу
     try:
+        logger.info(f"Начало операции скачивания книги (inline) для book_id {book_id}")
         file_data = await run_with_periodic_action(
             download_book(book_id, fmt),
             update,
@@ -479,26 +545,63 @@ async def choose_format_callback(update: Update, context: ContextTypes.DEFAULT_T
             action=ChatAction.UPLOAD_DOCUMENT,
             interval=4
         )
+        logger.info(f"Операция скачивания книги (inline) завершена для book_id {book_id}")
     except Exception as e:
-        logger.error(e)
+        logger.exception("Ошибка при скачивании книги через inline-кнопку:")
         await query.message.reply_text("Ошибка скачивания книги.")
         return
+
+    # Попытка получить детали книги
     try:
-        d = await get_book_details(book_id)
-        t = d["title"][:50] if d["title"] else "book"
-        a = d["author"] or ""
-        cpt = f"{t}\nАвтор: {a}"
-    except:
-        t = f"book_{book_id}"
-        cpt = t
-    filename = f"{t}_{book_id}.{fmt}"
+        logger.info(f"Начало операции получения деталей книги (inline) для book_id {book_id}")
+        d = await run_with_periodic_action(
+            get_book_details(book_id),
+            update,
+            context,
+            action=ChatAction.TYPING,
+            interval=4
+        )
+        logger.info(f"Операция получения деталей книги (inline) завершена для book_id {book_id}")
+    except Exception as e:
+        logger.exception("Ошибка при получении деталей книги через inline-кнопку:")
+        d = {"title": f"book_{book_id}", "author": ""}
+
+    # Формирование подписи
+    title = d.get("title") or "Без названия"
+    author = d.get("author") or "Неизвестен"
+    caption = f"{title[:50]}\nАвтор: {author}"
+    
+    # Получаем настройки пользователя для формирования имени файла
+    from db import get_user_settings  # если не импортировано ранее
+    st = await get_user_settings(query.from_user.id)
+    naming = st.get("preferred_book_naming") or "title_author"
+    if naming == "title":
+        fname = title
+    elif naming == "title_id":
+        fname = f"{title}_{book_id}"
+    elif naming == "title_author":
+        fname = f"{title}_{author}"
+    elif naming == "title_author_id":
+        fname = f"{title}_{author}_{book_id}"
+    else:
+        fname = f"{title}_{author}"
+    
+    filename = f"{sanitize_filename(fname)}.{fmt}"
+    
     await context.bot.send_document(
         chat_id=query.message.chat_id,
         document=file_data,
         filename=filename,
-        caption=cpt
+        caption=caption
     )
 
-    
 async def no_op_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.callback_query.answer("")
+
+def sanitize_filename(name: str) -> str:
+    """
+    Удаляет недопустимые символы для имени файла и обрезает лишние пробелы.
+    """
+    # Удаляем символы, которые нельзя использовать в именах файлов
+    name = re.sub(r'[\\/*?:"<>|]', "", name)
+    return name.strip()
