@@ -1,6 +1,7 @@
 import json
 import os
 import logging
+import re
 from config import ADMIN_ID
 
 logger = logging.getLogger(__name__)
@@ -113,30 +114,44 @@ def whitelist_required(func):
     return wrapper
 
 
-async def process_whitelist_forward(update, context):
+async def process_whitelist(update, context):
     """
-    Обрабатывает пересланное сообщение от администратора для добавления/удаления пользователя из вайтлиста.
-    Если админ пересылает сообщение, берётся update.message.forward_from.
-    Если пользователь уже в вайтлисте – удаляет его, иначе – добавляет.
+    Обрабатывает сообщение от администратора для добавления/удаления пользователя из вайтлиста.
+    Ожидается, что сообщение содержит юзернейм в формате @username.
+    Если юзернейм уже есть в вайтлисте – удаляет пользователя, иначе – добавляет.
     """
     try:
         if update.effective_user.id != ADMIN_ID:
-            logger.info("Пересланное сообщение не от администратора, обработка пропущена.")
+            logger.info("Сообщение не от администратора, обработка пропущена.")
             return
 
-        if not update.message.forward_from:
-            logger.warning("Пересланное сообщение не содержит информацию о отправителе.")
+        if not update.message.text:
+            logger.warning("Сообщение не содержит текст.")
             return
 
-        target_user = update.message.forward_from
-        target_id = target_user.id
-        logger.info(f"Обработка пересланного сообщения для пользователя {target_id}.")
+        text = update.message.text.strip()
+        match = re.fullmatch(r'@(\w+)', text)
+        if not match:
+            logger.warning("Текстовое сообщение не является корректным юзернеймом.")
+            await update.message.reply_text("Неверный формат. Отправьте юзернейм в формате: @username")
+            return
+
+        username = match.group(0)  # включает символ @
+        try:
+            target_chat = await context.bot.get_chat(username)
+        except Exception as e:
+            logger.error(f"Не удалось получить данные по юзернейму {username}: {e}")
+            await update.message.reply_text(f"Не удалось получить информацию по юзернейму {username}.")
+            return
+
+        target_id = target_chat.id
+        display_name = getattr(target_chat, 'first_name', None) or getattr(target_chat, 'title', None) or username
 
         if is_whitelisted(target_id):
             removed = remove_user_from_whitelist(target_id)
             if removed:
                 await update.message.reply_text(
-                    f"Пользователь {target_user.first_name} (ID: {target_id}) удалён из вайтлиста."
+                    f"Пользователь {display_name} (ID: {target_id}) удалён из вайтлиста."
                 )
             else:
                 await update.message.reply_text("Ошибка при удалении пользователя из вайтлиста.")
@@ -144,13 +159,13 @@ async def process_whitelist_forward(update, context):
             added = add_user_to_whitelist(target_id)
             if added:
                 await update.message.reply_text(
-                    f"Пользователь {target_user.first_name} (ID: {target_id}) добавлен в вайтлист."
+                    f"Пользователь {display_name} (ID: {target_id}) добавлен в вайтлист."
                 )
             else:
                 await update.message.reply_text("Ошибка при добавлении пользователя в вайтлист.")
     except Exception as e:
-        logger.exception(f"Ошибка в process_whitelist_forward: {e}")
+        logger.exception(f"Ошибка в process_whitelist: {e}")
         try:
-            await update.message.reply_text("Произошла ошибка при обработке пересланного сообщения.")
+            await update.message.reply_text("Произошла ошибка при обработке сообщения.")
         except Exception as inner_e:
             logger.exception(f"Ошибка при отправке сообщения об ошибке: {inner_e}")
