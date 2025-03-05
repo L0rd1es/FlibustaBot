@@ -50,6 +50,8 @@ def setup_logging():
     logger = logging.getLogger()
     logger.setLevel(logging.INFO)
 
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
     fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     fh = TimedRotatingFileHandler(LOG_FILE, when="H", interval=1, backupCount=24, encoding="utf-8")
