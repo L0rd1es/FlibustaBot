@@ -1,9 +1,12 @@
 # main.py
 
-import logging
-import asyncio
 import sys
 import os
+
+sys.pycache_prefix = os.path.join(os.path.dirname(__file__), 'pycache')
+
+import logging
+import asyncio
 import html
 import json
 import traceback
