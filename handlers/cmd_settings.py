@@ -1,7 +1,7 @@
 import logging
 import html
 from enum import Enum, auto
-from typing import Optional, Union
+from typing import Union
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
 from telegram.ext import (

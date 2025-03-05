@@ -1,6 +1,5 @@
 # state.py
 
-import asyncio
 import datetime
 from config import DATA_EXPIRATION_TIME
 
