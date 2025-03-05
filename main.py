@@ -41,6 +41,7 @@ from handlers.book_handler import choose_format_callback
 from utils.pagination import pagination_callback_handler
 from utils.utils import no_op_callback
 from utils.state import cleanup_old_data
+from utils.whitelist import whitelist_required, process_whitelist_forward
 
 def setup_logging():
     logger = logging.getLogger()
@@ -129,15 +130,16 @@ async def main_async():
 
     settings_conv = get_settings_conversation_handler()
     application.add_handler(settings_conv)
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("search", search_command))
-    application.add_handler(CommandHandler("book", book_command))
-    application.add_handler(CommandHandler("author", author_command))
+    application.add_handler(MessageHandler(filters.FORWARDED, process_whitelist_forward))
+    application.add_handler(CommandHandler("start", whitelist_required(start_command)))
+    application.add_handler(CommandHandler("help", whitelist_required(help_command)))
+    application.add_handler(CommandHandler("search", whitelist_required(search_command)))
+    application.add_handler(CommandHandler("book", whitelist_required(book_command)))
+    application.add_handler(CommandHandler("author", whitelist_required(author_command)))
     application.add_handler(CallbackQueryHandler(pagination_callback_handler, pattern=r"^pagination\|.*"))
     application.add_handler(CallbackQueryHandler(choose_format_callback, pattern=r"^choose_format\|"))
     application.add_handler(CallbackQueryHandler(no_op_callback, pattern=r"^no-op$"))
-    application.add_handler(MessageHandler(filters.TEXT | filters.COMMAND, text_message_handler))
+    application.add_handler(MessageHandler(filters.TEXT | filters.COMMAND, whitelist_required(text_message_handler)))
 
     try:
         hh, mm = SEND_REPORT_TIME.split(":")
