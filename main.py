@@ -69,22 +69,27 @@ def setup_logging():
 
 async def send_logs_to_admin(context):
     """Отправка LOG_FILE и STATS_FILE админу по расписанию."""
-    app = context.application
+    app = context.bot.application  # Исправленный вызов
+
     try:
         if os.path.exists(LOG_FILE):
-            await app.bot.send_document(
-                chat_id=ADMIN_ID,
-                document=open(LOG_FILE, "rb"),
-                filename=os.path.basename(LOG_FILE),
-                caption="Логи за период"
-            )
+            with open(LOG_FILE, "rb") as log_file:
+                await app.bot.send_document(
+                    chat_id=ADMIN_ID,
+                    document=log_file,
+                    filename=os.path.basename(LOG_FILE),
+                    caption="Логи за период"
+                )
+
         if os.path.exists(STATS_FILE):
-            await app.bot.send_document(
-                chat_id=ADMIN_ID,
-                document=open(STATS_FILE, "rb"),
-                filename=os.path.basename(STATS_FILE),
-                caption="Статистика за период"
-            )
+            with open(STATS_FILE, "rb") as stats_file:
+                await app.bot.send_document(
+                    chat_id=ADMIN_ID,
+                    document=stats_file,
+                    filename=os.path.basename(STATS_FILE),
+                    caption="Статистика за период"
+                )
+
     except Exception as e:
         logging.error(f"Не удалось отправить файлы админу: {e}")
 
