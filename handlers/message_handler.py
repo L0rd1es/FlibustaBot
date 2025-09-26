@@ -1,7 +1,13 @@
+# handlers/message_handler.py
+
 import logging
+import re
+from typing import Optional
+
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
+
 from services.service import search_books_and_authors, get_book_details, download_book
 from services.db import get_user_settings
 from config import SEARCH_RESULTS_PER_PAGE
@@ -9,107 +15,143 @@ from utils.chat_actions import set_typing_action, run_with_periodic_action
 from utils.pagination import build_page_text, build_pagination_kb
 from handlers.author_handler import author_books_command
 from handlers.book_handler import send_book_details_message
-from utils.state import set_author_mapping, set_user_search_data, get_user_ephemeral_mode, clear_user_ephemeral_mode
+from utils.state import (
+    set_author_mapping,
+    set_user_search_data,
+    get_user_ephemeral_mode,
+    clear_user_ephemeral_mode,
+)
 from utils.utils import send_or_edit_message
 
 logger = logging.getLogger(__name__)
 
+
+async def _safe_reply_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str) -> None:
+    """Пытается отправить текст пользователю вне зависимости от наличия message."""
+    try:
+        if update.message is not None:
+            await update.message.reply_text(text)
+            return
+        if update.effective_chat is not None:
+            await context.bot.send_message(update.effective_chat.id, text)
+            return
+        if update.effective_user is not None:
+            await context.bot.send_message(update.effective_user.id, text)
+    except Exception as e:
+        logger.warning("Не удалось отправить сообщение пользователю: %s", e)
+
+
 async def handle_download_command(book_id: str, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """
-    Обрабатывает команду загрузки книги.
-
-    Функция принимает идентификатор книги, проверяет его корректность, затем получает детали книги и, если у пользователя
-    установлен предпочтительный формат, пытается скачать книгу в этом формате. В случае успешного скачивания отправляет
-    книгу вместе с её деталями, иначе – отправляет только детали книги.
-
-    Параметры:
-        book_id (str): Идентификатор книги, переданный командой.
-        update (Update): Обновление, полученное от Telegram.
-        context (ContextTypes.DEFAULT_TYPE): Контекст выполнения.
-    """
+    """Загрузка книги по ID: учитывает preferred_format, шлёт карточку + файл (если доступен)."""
     if not book_id.isdigit():
-        await update.message.reply_text("Некорректный ID.")
+        await _safe_reply_text(update, context, "Некорректный ID.")
         return
 
     try:
-        logger.info(f"Получение деталей книги для book_id {book_id}")
+        logger.info("Получение деталей книги book_id=%s", book_id)
         details = await run_with_periodic_action(
-            get_book_details(book_id), update, context,
-            action=ChatAction.TYPING, interval=4
+            get_book_details(book_id),
+            update,
+            context,
+            action=ChatAction.TYPING,
+            interval=4,
         )
-    except Exception as e:
-        logger.exception("Ошибка при получении деталей книги:")
-        await update.message.reply_text("Не удалось получить книгу.")
+    except Exception:
+        logger.exception("Ошибка при получении деталей книги")
+        await _safe_reply_text(update, context, "Не удалось получить книгу.")
         return
 
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id if user else 0
     settings = await get_user_settings(user_id)
     preferred_format = settings.get("preferred_format")
 
-    if preferred_format and (preferred_format in details["formats"]):
+    # если формат задан и доступен — качаем файл
+    if preferred_format and preferred_format in details.get("formats", []):
         try:
-            logger.info(f"Скачивание книги book_id {book_id} в формате {preferred_format}")
+            logger.info("Скачивание книги %s в формате %s", book_id, preferred_format)
             file_data = await run_with_periodic_action(
                 download_book(book_id, preferred_format),
                 update,
                 context,
                 action=ChatAction.UPLOAD_DOCUMENT,
-                interval=4
+                interval=4,
             )
+            # карточку отправляем всегда
             await send_book_details_message(update, context, details)
+
+            chat_id = update.effective_chat.id if update.effective_chat else user_id
             await context.bot.send_document(
-                chat_id=update.effective_chat.id,
+                chat_id=chat_id,
                 document=file_data,
-                filename=f"{details['title'][:50]}_{book_id}.{preferred_format}",
-                caption=f"{details['title']}\nАвтор: {details['author']}"
+                filename=f"{details.get('title','book')[:50]}_{book_id}.{preferred_format}",
+                caption=f"{details.get('title','')}\nАвтор: {details.get('author','')}",
             )
-        except Exception as e:
-            logger.exception("Ошибка при скачивании книги:")
+        except Exception:
+            logger.exception("Ошибка при скачивании книги")
             await send_book_details_message(update, context, details)
     else:
         await send_book_details_message(update, context, details)
 
-def build_response_text(books: list, authors: list) -> str:
-    response_lines = []
+
+def _build_response_lines(books: list, authors: list) -> list[str]:
+    """Готовит строки результата (для пагинации)."""
+    lines: list[str] = []
     if authors:
-        response_lines.append(f"Найдено авторов: {len(authors)}\n")
-        for author in authors:
-            response_lines.append(
-                f"{author['name']} - {author['book_count']} книг\nКниги автора: /author{author['id']}\n\n"
+        lines.append(f"📖 <b>Найдено авторов:</b> {len(authors)}\n")
+        for a in authors:
+            lines.append(
+                f"• <b>{a['name']}</b> — {a['book_count']} книг\n"
+                f"  <u>/author{a['id']}</u>\n\n"
             )
     if books:
-        response_lines.append(f"Найдено книг: {len(books)}\n")
-        for book in books:
-            response_lines.append(
-                f"{book['title']}\n{book['author']}\nСкачать: /download{book['id']}\n\n"
+        lines.append(f"📚 <b>Найдено книг:</b> {len(books)}\n")
+        for b in books:
+            lines.append(
+                f"• <b>{b['title']}</b>\n"
+                f"  Автор: <i>{b['author']}</i>\n"
+                f"  Скачать: <u>/download{b['id']}</u>\n\n"
             )
-    return "".join(response_lines)
+    return lines
+
 
 async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Обрабатывает входящие текстовые сообщения от пользователя.
-    
-    В зависимости от содержания сообщения выполняет:
-      - Загрузку книги (/download)
-      - Поиск авторов и книг
-      - Перенаправление к другим обработчикам команд
+    Обрабатывает входящие текстовые сообщения:
+    - /download<ID>[@...]
+    - /author<ID>[@...]
+    - текстовый поиск
     """
     await set_typing_action(update, context)
+
+    if update.message is None or update.message.text is None:
+        await _safe_reply_text(update, context, "Я понимаю только текстовые сообщения.")
+        return
+
     text = update.message.text.strip()
-    user_id = update.effective_user.id
-    chat_id = update.effective_chat.id
+    # ✂️ убираем @... если есть
+    if "@" in text:
+        text = text.split("@", 1)[0]
 
-    logger.info(f"{user_id}:{chat_id} -> {text}")
+    user = update.effective_user
+    chat = update.effective_chat
+    user_id = user.id if user else 0
+    chat_id = chat.id if chat else 0
+    logger.info("%s:%s -> %s", user_id, chat_id, text)
 
-    if text.startswith("/download"):
-        book_id = text.removeprefix("/download").strip()
+    # --- /download<ID> ---
+    m = re.match(r"^/download(\d+)$", text, re.IGNORECASE)
+    if m:
+        book_id = m.group(1)
         await handle_download_command(book_id, update, context)
         return
 
-    if text.startswith("/author") and text[7:].isdigit():
+    # --- /author<ID> ---
+    if text.lower().startswith("/author"):
         await author_books_command(update, context)
         return
 
+    # --- Поиск ---
     try:
         mode = get_user_ephemeral_mode(user_id)
         if mode is None:
@@ -118,42 +160,27 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
         data = await search_books_and_authors(text, mode)
         clear_user_ephemeral_mode(user_id)
-    except Exception as e:
-        logger.exception("Ошибка при поиске книг и авторов:")
-        await update.message.reply_text("Ошибка при поиске.")
+    except Exception:
+        logger.exception("Ошибка при поиске книг и авторов")
+        await _safe_reply_text(update, context, "Ошибка при поиске.")
         return
 
     books = data.get("books_found", [])
     authors = data.get("authors_found", [])
 
     if authors:
-        for author in authors:
-            set_author_mapping(author["id"], author["name"])
+        for a in authors:
+            set_author_mapping(a["id"], a["name"])
 
     if not books and not authors:
-        await update.message.reply_text("Ничего не найдено.")
+        await _safe_reply_text(update, context, "Ничего не найдено.")
         return
 
-    response_lines = []
-    if authors:
-        response_lines.append(f"📖 <b>Найдено авторов:</b> {len(authors)}\n")
-        for author in authors:
-            response_lines.append(
-                f"• <b>{author['name']}</b> — {author['book_count']} книг\n"
-                f"  <u>/author{author['id']}</u>\n\n"
-            )
-    if books:
-        response_lines.append(f"📚 <b>Найдено книг:</b> {len(books)}\n")
-        for book in books:
-            response_lines.append(
-                f"• <b>{book['title']}</b>\n"
-                f"  Автор: <i>{book['author']}</i>\n"
-                f"  Скачать: <u>/download{book['id']}</u>\n\n"
-            )
-
-    total_pages = (len(response_lines) + SEARCH_RESULTS_PER_PAGE - 1) // SEARCH_RESULTS_PER_PAGE
-    set_user_search_data(user_id, response_lines, total_pages)
+    lines = _build_response_lines(books, authors)
+    total_pages = max(1, (len(lines) + SEARCH_RESULTS_PER_PAGE - 1) // SEARCH_RESULTS_PER_PAGE)
+    set_user_search_data(user_id, lines, total_pages)
 
     page_text = build_page_text(user_id)
-    pagination_keyboard = build_pagination_kb(user_id)
-    await send_or_edit_message(update, page_text, reply_markup=pagination_keyboard)
+    kb = build_pagination_kb(user_id)
+
+    await send_or_edit_message(update, page_text, reply_markup=kb)

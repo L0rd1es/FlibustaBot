@@ -1,104 +1,152 @@
-# service.py
+# services/service.py
 
 import asyncio
 import time
 import aiohttp
 import re
 import logging
-from bs4 import BeautifulSoup
+import random
+from typing import Any, Dict, List, Optional, Callable
+
+from bs4 import BeautifulSoup, Tag
 from config import FLIBUSTA_MIRRORS, RATE_LIMIT_RPS
 
 logger = logging.getLogger(__name__)
 
-mirror_state = [{"url": m, "penalty": 0} for m in FLIBUSTA_MIRRORS]
-last_request_time = 0.0
-rate_limit_lock = asyncio.Lock()
+# --------- Глобальные состояния ---------
+mirror_state: List[Dict[str, Any]] = [{"url": m, "penalty": 0} for m in FLIBUSTA_MIRRORS]
+_mirrors_lock = asyncio.Lock()
 
-session = None
+_last_request_mono = 0.0
+_rate_limit_lock = asyncio.Lock()
+
+_session: Optional[aiohttp.ClientSession] = None
+
+_DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
+_DEFAULT_HEADERS = {"User-Agent": "FlibustaBot/1.0 (+https://t.me/your_bot)"}
+
+
+# --------- Вспомогательные хелперы ---------
+
+def _href_startswith(prefix: str) -> Callable[[Optional[str]], bool]:
+    """Typed-предикат для BeautifulSoup href=..."""
+    def _pred(x: Optional[str]) -> bool:
+        return isinstance(x, str) and x.startswith(prefix)
+    return _pred
+
+
+def _text_clean(s: str) -> str:
+    return " ".join(s.split())
+
+
+def _as_tag(node: Any) -> Optional[Tag]:
+    return node if isinstance(node, Tag) else None
+
+
+def _str_attr(tag: Tag, name: str) -> str:
+    """
+    Безопасно вернуть строковый атрибут тега.
+    Возвращает "" если атрибут отсутствует или имеет тип не str (например, AttributeValueList).
+    """
+    val = tag.get(name)
+    return val if isinstance(val, str) else ""
+
+
+# --------- Сессия/Rate Limit ---------
+
+async def _ensure_session() -> aiohttp.ClientSession:
+    global _session
+    if _session is None or _session.closed:
+        _session = aiohttp.ClientSession(timeout=_DEFAULT_TIMEOUT, headers=_DEFAULT_HEADERS)
+    return _session
+
 
 async def init_session() -> None:
-    """
-    Инициализирует глобальную сессию для выполнения HTTP-запросов.
-    """
-    global session
-    session = aiohttp.ClientSession()
+    await _ensure_session()
+
 
 async def close_session() -> None:
-    """
-    Закрывает глобальную сессию, если она существует.
-    """
-    if session is not None:
-        await session.close()
+    global _session
+    if _session is not None and not _session.closed:
+        await _session.close()
+    _session = None
+
 
 async def rate_limit() -> None:
-    """
-    Выполняет ограничение скорости запросов, ожидая необходимый интервал между запросами.
-    """
-    global last_request_time
+    global _last_request_mono
+    if RATE_LIMIT_RPS <= 0:
+        return
     interval = 1.0 / RATE_LIMIT_RPS
-    async with rate_limit_lock:
-        now = time.time()
-        elapsed = now - last_request_time
+    async with _rate_limit_lock:
+        now = time.monotonic()
+        elapsed = now - _last_request_mono
         if elapsed < interval:
             await asyncio.sleep(interval - elapsed)
-        last_request_time = time.time()
+        _last_request_mono = time.monotonic()
 
-async def fetch_url_with_penalty(path: str, params=None, headers=None, max_retries=3) -> str:
-    """
-    Запрашивает URL с учетом штрафов для зеркал, повторяя попытки в случае неудачи.
 
-    Args:
-        path (str): Путь запроса, который добавляется к базовому URL зеркала.
-        params (Optional[Dict[str, Any]]): Параметры запроса.
-        headers (Optional[Dict[str, str]]): Заголовки запроса.
-        max_retries (int): Максимальное количество попыток запроса.
-
-    Returns:
-        str: Текст ответа.
-
-    Raises:
-        Exception: Если все попытки запроса завершились неудачно.
-    """
-    attempt = 0
-    delay = 1
-    last_exc = None
-    while attempt < max_retries:
-        attempt += 1
+async def _pick_best_mirror() -> Dict[str, Any]:
+    async with _mirrors_lock:
         mirror_state.sort(key=lambda x: x["penalty"])
-        mirror = mirror_state[0]
+        return mirror_state[0]
+
+
+async def _bump_penalty(mirror: Dict[str, Any], delta: int = 1) -> None:
+    async with _mirrors_lock:
+        mirror["penalty"] = mirror.get("penalty", 0) + delta
+
+
+async def _decay_penalty(mirror: Dict[str, Any], delta: int = 1) -> None:
+    async with _mirrors_lock:
+        mirror["penalty"] = max(0, mirror.get("penalty", 0) - delta)
+
+
+# --------- Сетевой слой ---------
+
+async def fetch_url_with_penalty(
+    path: str,
+    params: Optional[Dict[str, Any]] = None,
+    headers: Optional[Dict[str, str]] = None,
+    max_retries: int = 3,
+) -> str:
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, max_retries + 1):
+        mirror = await _pick_best_mirror()
         url = mirror["url"] + path
         await rate_limit()
+
         try:
-            logger.info(f"Fetching URL: {url} (Attempt {attempt})")
-            async with session.get(url, params=params, headers=headers, timeout=10) as resp:
+            sess = await _ensure_session()
+            logger.info("Fetching URL: %s (attempt %d/%d)", url, attempt, max_retries)
+            async with sess.get(url, params=params, headers=headers) as resp:
                 if resp.status == 200:
-                    mirror["penalty"] = max(0, mirror["penalty"] - 1)
-                    logger.info(f"Fetched URL successfully: {url}")
-                    return await resp.text()
+                    await _decay_penalty(mirror, 1)
+                    text = await resp.text()
+                    logger.debug("Fetched OK: %s", url)
+                    return text
                 else:
-                    mirror["penalty"] += 1
+                    await _bump_penalty(mirror, 1)
                     last_exc = Exception(f"HTTP {resp.status} {url}")
-                    logger.error(f"Error fetching URL: HTTP {resp.status} for {url}")
+                    logger.warning("Non-200 response: %s -> %s", url, resp.status)
+        except asyncio.TimeoutError:
+            await _bump_penalty(mirror, 2)
+            last_exc = Exception(f"Timeout when fetching {url}")
+            logger.warning("Timeout fetching %s", url)
         except Exception as e:
-            mirror["penalty"] += 1
+            await _bump_penalty(mirror, 2)
             last_exc = e
-            logger.exception(f"Exception during fetching URL: {url}")
-        await asyncio.sleep(delay)
-        delay *= 2
+            logger.exception("Exception during fetching: %s", url)
+
+        backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.3)
+        await asyncio.sleep(backoff)
+
     raise last_exc or Exception("All mirrors failed")
 
-async def search_books_and_authors(query: str, mode="general") -> dict:
-    """
-    Ищет книги и авторов по заданному запросу.
 
-    Args:
-        query (str): Поисковый запрос.
-        mode (str, optional): Режим поиска ("general", "book", "author").
+# --------- Бизнес-логика ---------
 
-    Returns:
-        Dict[str, Any]: Словарь с ключами "books_found" и "authors_found".
-    """
-    params = {"ask": query}
+async def search_books_and_authors(query: str, mode: str = "general") -> Dict[str, Any]:
+    params: Dict[str, Any] = {"ask": query}
     if mode in ("general", "book"):
         params["chb"] = "on"
     if mode in ("general", "author"):
@@ -106,101 +154,89 @@ async def search_books_and_authors(query: str, mode="general") -> dict:
     if mode == "general":
         params["chs"] = "on"
 
-    html = await fetch_url_with_penalty("/booksearch", params=params, headers={"User-Agent": "Bot/1.0"})
+    html = await fetch_url_with_penalty("/booksearch", params=params, headers=_DEFAULT_HEADERS)
     soup = BeautifulSoup(html, "lxml")
 
-    data = {
-        "books_found": [],
-        "authors_found": []
-    }
+    data: Dict[str, Any] = {"books_found": [], "authors_found": []}
 
-    h3_auth = soup.find(lambda t: t.name == "h3" and "Найденные писатели" in t.get_text("", strip=True))
+    # Авторы
+    h3_auth = soup.find(lambda t: _as_tag(t) is not None and t.name == "h3" and "Найденные писатели" in t.get_text("", strip=True))
+    h3_auth = _as_tag(h3_auth)
     if h3_auth:
-        ul = h3_auth.find_next("ul")
+        ul = _as_tag(h3_auth.find_next("ul"))
         if ul:
             for li in ul.find_all("li"):
-                a_tag = li.find("a", href=lambda x: x and x.startswith("/a/"))
+                li = _as_tag(li)
+                if not li:
+                    continue
+                a_tag = _as_tag(li.find("a", href=_href_startswith("/a/")))
                 if not a_tag:
                     continue
-                href = a_tag["href"]
-                author_id = href.split("/a/")[-1]
-                txt = " ".join(li.get_text().split())
+                href = _str_attr(a_tag, "href")
+                author_id = href.split("/a/")[-1] if "/a/" in href else "?"
+                txt = _text_clean(li.get_text())
                 mm = re.search(r"\((\d+)\s*книг", txt)
                 bc = mm.group(1) if mm else "?"
-                aname = " ".join(a_tag.get_text().split())
-                data["authors_found"].append({
-                    "id": author_id,
-                    "name": aname,
-                    "book_count": bc
-                })
+                aname = _text_clean(a_tag.get_text())
+                data["authors_found"].append({"id": author_id, "name": aname, "book_count": bc})
 
-    h3_books = soup.find(lambda t: t.name == "h3" and "Найденные книги" in t.get_text("", strip=True))
+    # Книги
+    h3_books = soup.find(lambda t: _as_tag(t) is not None and t.name == "h3" and "Найденные книги" in t.get_text("", strip=True))
+    h3_books = _as_tag(h3_books)
     if h3_books:
-        ul = h3_books.find_next("ul")
+        ul = _as_tag(h3_books.find_next("ul"))
         if ul:
             for li in ul.find_all("li"):
-                a_tags = li.find_all("a")
+                li = _as_tag(li)
+                if not li:
+                    continue
+                a_tags = [_as_tag(a) for a in li.find_all("a")]
+                a_tags = [a for a in a_tags if a is not None]
                 if not a_tags:
                     continue
-                raw_title = " ".join(a_tags[0].get_text().split())
+                raw_title = _text_clean(a_tags[0].get_text())
                 title_clean = re.sub(r"\([^)]+\)$", "", raw_title).strip()
-                hrefb = a_tags[0].get("href", "")
-                b_id = "???"
-                if "/b/" in hrefb:
-                    b_id = hrefb.split("/b/")[-1]
-                auth_list = []
+                hrefb = _str_attr(a_tags[0], "href")
+                b_id = hrefb.split("/b/")[-1] if "/b/" in hrefb else "???"
+                auth_list: List[str] = []
                 for xx in a_tags[1:]:
-                    nm = " ".join(xx.get_text().split())
+                    nm = _text_clean(xx.get_text())
                     if nm.lower() not in ("все",):
                         auth_list.append(nm)
                 if not auth_list:
                     auth_list = ["Автор неизвестен"]
                 auth_str = ", ".join(auth_list)
-                data["books_found"].append({
-                    "id": b_id,
-                    "title": title_clean,
-                    "author": auth_str
-                })
+                data["books_found"].append({"id": b_id, "title": title_clean, "author": auth_str})
 
     return data
 
-async def get_book_details(book_id: str) -> dict:
-    """
-    Получает детали книги по её идентификатору.
 
-    Args:
-        book_id (str): Идентификатор книги.
-
-    Returns:
-        Dict[str, Any]: Словарь с информацией о книге (название, автор, аннотация, год, URL обложки, форматы).
-    """
+async def get_book_details(book_id: str) -> Dict[str, Any]:
     try:
-        logger.info(f"Начало получения деталей книги для book_id {book_id}")
-        html = await fetch_url_with_penalty(f"/b/{book_id}", headers={"User-Agent": "Bot/1.0"})
+        logger.info("get_book_details start: %s", book_id)
+        html = await fetch_url_with_penalty(f"/b/{book_id}", headers=_DEFAULT_HEADERS)
         soup = BeautifulSoup(html, "lxml")
+
         title = "Неизвестно"
         author = ""
         annotation = ""
-        year = None
-        cover_url = None
-        formats = set()
+        year: Optional[str] = None
+        cover_url: Optional[str] = None
+        formats: set[str] = set()
 
-        h1 = soup.find("h1", class_="title")
+        h1 = _as_tag(soup.find("h1", class_="title"))
         if h1:
-            t = " ".join(h1.get_text().split())
+            t = _text_clean(h1.get_text())
             t = re.sub(r"\([^)]+\)$", "", t).strip()
             title = t
 
-        if h1:
-            a_auth = h1.find_next("a", href=lambda x: x and x.startswith("/a/"))
-        else:
-            a_auth = soup.find("a", href=lambda x: x and x.startswith("/a/"))
+        a_auth = _as_tag(h1.find_next("a", href=_href_startswith("/a/"))) if h1 else _as_tag(soup.find("a", href=_href_startswith("/a/")))
         if a_auth:
-            author = " ".join(a_auth.get_text().split())
+            author = _text_clean(a_auth.get_text())
 
-        anno_div = soup.find("div", id="bookannotation")
+        anno_div = _as_tag(soup.find("div", id="bookannotation"))
         if anno_div:
-            at = " ".join(anno_div.get_text().split())
+            at = _text_clean(anno_div.get_text())
             if len(at) > 2000:
                 at = at[:2000] + "..."
             annotation = at
@@ -209,17 +245,21 @@ async def get_book_details(book_id: str) -> dict:
         if mm:
             year = mm.group(1)
 
-        cov = soup.find("img", alt="Cover image")
-        if cov and cov.get("src"):
-            raw_src = cov["src"]
-            if raw_src.startswith("/"):
-                mirror_state.sort(key=lambda x: x["penalty"])
-                cover_url = mirror_state[0]["url"] + raw_src
-            else:
-                cover_url = raw_src
+        cov = _as_tag(soup.find("img", alt="Cover image"))
+        if cov:
+            raw_src = _str_attr(cov, "src")
+            if raw_src:
+                if raw_src.startswith("/"):
+                    best = await _pick_best_mirror()
+                    cover_url = best["url"] + raw_src
+                else:
+                    cover_url = raw_src
 
         for link in soup.find_all("a"):
-            hr = link.get("href", "").lower()
+            link = _as_tag(link)
+            if not link:
+                continue
+            hr = _str_attr(link, "href").lower()
             if f"/b/{book_id}" in hr:
                 if "fb2" in hr:
                     formats.add("fb2")
@@ -230,7 +270,7 @@ async def get_book_details(book_id: str) -> dict:
                 elif "pdf" in hr:
                     formats.add("pdf")
 
-        logger.info(f"Завершено получение деталей книги для book_id {book_id}")
+        logger.info("get_book_details done: %s", book_id)
         return {
             "id": book_id,
             "title": title,
@@ -238,153 +278,136 @@ async def get_book_details(book_id: str) -> dict:
             "annotation": annotation,
             "year": year,
             "cover_url": cover_url,
-            "formats": list(formats)
+            "formats": sorted(formats),
         }
-    except Exception as e:
-        logger.exception(f"Ошибка в get_book_details для book_id {book_id}:")
+    except Exception:
+        logger.exception("Ошибка в get_book_details для %s", book_id)
         raise
 
+
 async def download_book(book_id: str, fmt: str) -> bytes:
-    """
-    Скачивает книгу в указанном формате.
-
-    Args:
-        book_id (str): Идентификатор книги.
-        fmt (str): Формат книги (например, "fb2", "epub", "mobi", "pdf").
-
-    Returns:
-        bytes: Содержимое файла книги в виде байтов.
-
-    Raises:
-        Exception: Если скачивание не удалось после всех попыток.
-    """
     paths = [f"/b/{book_id}/{fmt}", f"/b/{book_id}/download?format={fmt}"]
-    last_exc = None
+    last_exc: Optional[Exception] = None
     max_retries = 3
     timeout_seconds = 20
 
-    try:
-        logger.info(f"Начало скачивания книги {book_id} в формате {fmt}")
-        
-        for path in paths:
-            for attempt in range(max_retries):
-                await rate_limit()
-                mirror_state.sort(key=lambda x: x["penalty"])
-                mirror = mirror_state[0]
-                url = mirror["url"] + path
+    logger.info("download_book start: %s (%s)", book_id, fmt)
 
-                try:
-                    async with session.get(url, timeout=timeout_seconds) as resp:
-                        if resp.status == 200:
-                            content = await resp.read()
-                            if content:
-                                mirror["penalty"] = max(0, mirror["penalty"] - 1)
-                                logger.info(f"Книга успешно скачана: {url}")
-                                return content
-                            else:
-                                mirror["penalty"] += 1
-                                last_exc = Exception(f"Пустой контент: {url}")
-                                logger.error(f"Сервер вернул пустой файл: {url}")
+    for path in paths:
+        for attempt in range(1, max_retries + 1):
+            await rate_limit()
+            mirror = await _pick_best_mirror()
+            url = mirror["url"] + path
+
+            try:
+                sess = await _ensure_session()
+                timeout = aiohttp.ClientTimeout(total=timeout_seconds)
+                async with sess.get(url, timeout=timeout) as resp:
+                    if resp.status == 200:
+                        content = await resp.read()
+                        if content:
+                            await _decay_penalty(mirror, 1)
+                            logger.info("download_book OK: %s", url)
+                            return content
                         else:
-                            mirror["penalty"] += 1
-                            last_exc = Exception(f"Ошибка скачивания {resp.status} {url}")
-                            logger.error(f"Ошибка HTTP {resp.status} при скачивании {url}")
+                            await _bump_penalty(mirror, 1)
+                            last_exc = Exception(f"Empty content: {url}")
+                            logger.warning("Empty content: %s", url)
+                    else:
+                        await _bump_penalty(mirror, 1)
+                        last_exc = Exception(f"HTTP {resp.status} {url}")
+                        logger.warning("download_book HTTP %s: %s", resp.status, url)
 
-                except asyncio.TimeoutError:
-                    mirror["penalty"] += 2
-                    last_exc = Exception(f"Тайм-аут при скачивании: {url}")
-                    logger.error(f"Тайм-аут при скачивании {url}")
+            except asyncio.TimeoutError:
+                await _bump_penalty(mirror, 2)
+                last_exc = Exception(f"Timeout: {url}")
+                logger.warning("download_book timeout: %s", url)
+            except Exception as e:
+                await _bump_penalty(mirror, 2)
+                last_exc = e
+                logger.exception("download_book error: %s", url)
 
-                except Exception as e:
-                    mirror["penalty"] += 2
-                    last_exc = e
-                    logger.exception(f"Ошибка при скачивании книги {book_id} с {url}")
+            backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.3)
+            await asyncio.sleep(backoff)
 
-                await asyncio.sleep(2 ** attempt)
-
-        logger.error(f"Не удалось скачать книгу {book_id} в формате {fmt} после {max_retries} попыток")
-    except Exception as e:
-        logger.exception(f"Фатальная ошибка в download_book для book_id {book_id} с форматом {fmt}")
-        raise
-
-    raise last_exc or Exception(f"Не удалось скачать книгу {book_id} в формате {fmt}")
+    logger.error("download_book failed after retries: %s (%s)", book_id, fmt)
+    raise last_exc or Exception(f"Не удалось скачать {book_id} ({fmt})")
 
 
-async def get_author_books(author_id: str, default_author: str = None) -> list:
-    """
-    Получает список книг автора по его идентификатору.
-
-    Args:
-        author_id (str): Идентификатор автора.
-        default_author (Optional[str], optional): Имя автора по умолчанию, если не найдено в HTML.
-
-    Returns:
-        List[Dict[str, Any]]: Список книг автора, где каждая книга представлена словарем с ключами "id", "title" и "author".
-    """
+async def get_author_books(author_id: str, default_author: Optional[str] = None) -> List[Dict[str, Any]]:
     try:
-        logger.info(f"Начало получения книг автора для author_id {author_id}")
-        html = await fetch_url_with_penalty(f"/a/{author_id}", headers={"User-Agent": "Bot/1.0"})
+        logger.info("get_author_books start: %s", author_id)
+        html = await fetch_url_with_penalty(f"/a/{author_id}", headers=_DEFAULT_HEADERS)
         soup = BeautifulSoup(html, "lxml")
-        out = []
-        h_section = soup.find(lambda t: t.name in ("h2", "h3") and (
-            "Книги автора" in t.get_text("", strip=True) or
-            "Произведения автора" in t.get_text("", strip=True) or
-            "Найденные книги" in t.get_text("", strip=True) or
-            "Список произведений" in t.get_text("", strip=True)
-        ))
+        out: List[Dict[str, Any]] = []
+
+        h_section = soup.find(
+            lambda t: _as_tag(t) is not None
+            and t.name in ("h2", "h3")
+            and any(k in t.get_text("", strip=True) for k in ("Книги автора", "Произведения автора", "Найденные книги", "Список произведений"))
+        )
+        h_section = _as_tag(h_section)
+
         if h_section:
-            ul = h_section.find_next("ul")
+            ul = _as_tag(h_section.find_next("ul"))
             if ul:
                 for li in ul.find_all("li"):
-                    a_tag = li.find("a")
+                    li = _as_tag(li)
+                    if not li:
+                        continue
+                    a_tag = _as_tag(li.find("a"))
                     if not a_tag:
                         continue
-                    raw_title = " ".join(a_tag.get_text().split())
+                    raw_title = _text_clean(a_tag.get_text())
                     t_clean = re.sub(r"\([^)]+\)$", "", raw_title).strip()
-                    hr = a_tag.get("href", "")
+                    hr = _str_attr(a_tag, "href")
                     b_id = hr.split("/b/")[-1] if "/b/" in hr else "???"
+
                     if default_author is not None:
                         auth_name = default_author
                     else:
-                        h1_author = soup.find("h1")
+                        h1_author = _as_tag(soup.find("h1"))
                         if h1_author:
-                            text_h1 = " ".join(h1_author.get_text().split())
+                            text_h1 = _text_clean(h1_author.get_text())
                             auth_name = text_h1 if "флибуста" not in text_h1.lower() else "Неизвестен"
                         else:
                             auth_name = "Неизвестен"
-                    out.append({
-                        "id": b_id,
-                        "title": t_clean,
-                        "author": auth_name
-                    })
+
+                    out.append({"id": b_id, "title": t_clean, "author": auth_name})
+
             if out:
-                logger.info(f"Получено {len(out)} книг автора для author_id {author_id}")
+                logger.info("get_author_books done (from section): %d items", len(out))
                 return out
+
+        # fallback: соберём все /b/<id>
         links = soup.find_all("a", href=re.compile(r"^/b/\d+$"))
         seen = set()
         for link in links:
-            hr = link.get("href")
+            link = _as_tag(link)
+            if not link:
+                continue
+            hr = _str_attr(link, "href")
             b_id = hr.split("/b/")[-1]
             if b_id in seen:
                 continue
             seen.add(b_id)
-            title = " ".join(link.get_text().split())
+            title = _text_clean(link.get_text())
+
             if default_author is not None:
                 auth_name = default_author
             else:
-                h1_author = soup.find("h1")
+                h1_author = _as_tag(soup.find("h1"))
                 if h1_author:
-                    text_h1 = " ".join(h1_author.get_text().split())
+                    text_h1 = _text_clean(h1_author.get_text())
                     auth_name = text_h1 if "флибуста" not in text_h1.lower() else "Неизвестен"
                 else:
                     auth_name = "Неизвестен"
-            out.append({
-                "id": b_id,
-                "title": title,
-                "author": auth_name
-            })
-        logger.info(f"Получено {len(out)} книг автора (fallback) для author_id {author_id}")
+
+            out.append({"id": b_id, "title": title, "author": auth_name})
+
+        logger.info("get_author_books done (fallback): %d items", len(out))
         return out
-    except Exception as e:
-        logger.exception(f"Ошибка в get_author_books для author_id {author_id}:")
+
+    except Exception:
+        logger.exception("Ошибка в get_author_books для %s", author_id)
         raise

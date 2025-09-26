@@ -1,13 +1,25 @@
-#chat_actions.py
+# chat_actions.py
 
 import asyncio
 import logging
+from contextlib import suppress
+from typing import Awaitable, TypeVar
+
 from telegram import Update
 from telegram.ext import ContextTypes
 from telegram.constants import ChatAction
-from contextlib import suppress
 
 logger = logging.getLogger(__name__)
+T = TypeVar("T")
+
+
+def _get_chat_id(update: Update) -> int:
+    """Безопасно достаём chat_id или бросаем ValueError (чтобы не падать молча)."""
+    chat = update.effective_chat
+    if chat is None:
+        raise ValueError("effective_chat is None — невозможно отправить chat action.")
+    return chat.id
+
 
 async def set_typing_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -17,10 +29,21 @@ async def set_typing_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update (Update): Обновление Telegram.
         context (ContextTypes.DEFAULT_TYPE): Контекст выполнения.
     """
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action=ChatAction.TYPING
-    )
+    try:
+        chat_id = _get_chat_id(update)
+    except ValueError as e:
+        logger.warning("set_typing_action: %s", e)
+        return
+
+    try:
+        await context.bot.send_chat_action(
+            chat_id=chat_id,
+            action=ChatAction.TYPING
+        )
+    except Exception as e:
+        # Не роняем хендлер из-за временных сетевых/лимитных ошибок
+        logger.warning("set_typing_action failed: %s", e)
+
 
 async def set_upload_document_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -30,10 +53,20 @@ async def set_upload_document_action(update: Update, context: ContextTypes.DEFAU
         update (Update): Обновление Telegram.
         context (ContextTypes.DEFAULT_TYPE): Контекст выполнения.
     """
-    await context.bot.send_chat_action(
-        chat_id=update.effective_chat.id,
-        action=ChatAction.UPLOAD_DOCUMENT
-    )
+    try:
+        chat_id = _get_chat_id(update)
+    except ValueError as e:
+        logger.warning("set_upload_document_action: %s", e)
+        return
+
+    try:
+        await context.bot.send_chat_action(
+            chat_id=chat_id,
+            action=ChatAction.UPLOAD_DOCUMENT
+        )
+    except Exception as e:
+        logger.warning("set_upload_document_action failed: %s", e)
+
 
 async def periodic_chat_action(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str, interval: float, stop_event: asyncio.Event):
     """
@@ -46,13 +79,30 @@ async def periodic_chat_action(update: Update, context: ContextTypes.DEFAULT_TYP
         interval (float): Интервал между отправками действия (в секундах).
         stop_event (asyncio.Event): Событие, которое прекращает отправку, когда установлено.
     """
+    try:
+        chat_id = _get_chat_id(update)
+    except ValueError as e:
+        logger.warning("periodic_chat_action: %s", e)
+        return
+
+    # Если пришёл некорректный интервал, мягко используем дефолт из оригинала
+    if interval is None or interval <= 0:
+        interval = 4.0
+
     while not stop_event.is_set():
-        await context.bot.send_chat_action(
-            chat_id=update.effective_chat.id,
-            action=action
-        )
+        try:
+            await context.bot.send_chat_action(
+                chat_id=chat_id,
+                action=action
+            )
+        except Exception as e:
+            # Логируем и продолжаем — не срываем периодическую отправку
+            logger.warning("periodic_chat_action send failed: %s", e)
+
+        # ждем либо остановку, либо таймаут
         with suppress(asyncio.TimeoutError):
             await asyncio.wait_for(stop_event.wait(), timeout=interval)
+
 
 async def run_with_periodic_action(coro, update: Update, context: ContextTypes.DEFAULT_TYPE, action: str = ChatAction.TYPING, interval: float = 4):
     """
@@ -70,10 +120,21 @@ async def run_with_periodic_action(coro, update: Update, context: ContextTypes.D
         Any: Результат выполнения корутины.
     """
     stop_event = asyncio.Event()
-    periodic_task = asyncio.create_task(periodic_chat_action(update, context, action, interval, stop_event))
+
+    # Создаём фоновую задачу связанную с жизненным циклом приложения, если доступно
+    create_task = getattr(context.application, "create_task", asyncio.create_task)
+    periodic_task = create_task(
+        periodic_chat_action(update, context, action, interval, stop_event)
+    )
+
     try:
         result = await coro
         return result
     finally:
+        # Сигнализируем о завершении и корректно дожидаемся фоновой задачи
         stop_event.set()
-        await periodic_task
+        if not periodic_task.done():
+            # мягкая отмена, если задача еще в ожидании таймера
+            periodic_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await periodic_task
