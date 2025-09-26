@@ -341,13 +341,25 @@ async def get_author_books(author_id: str, default_author: Optional[str] = None)
         soup = BeautifulSoup(html, "lxml")
         out: List[Dict[str, Any]] = []
 
+        def is_poor(name: Optional[str]) -> bool:
+            if not name:
+                return True
+            s = name.strip()
+            if not s or s.lower() == "неизвестен":
+                return True
+            # «одно слово» считаем плохим (например, только "Адамс")
+            return len(s.split()) < 2
+
+        # --- основная секция со списком произведений автора ---
         h_section = soup.find(
             lambda t: _as_tag(t) is not None
             and t.name in ("h2", "h3")
-            and any(k in t.get_text("", strip=True) for k in ("Книги автора", "Произведения автора", "Найденные книги", "Список произведений"))
+            and any(k in t.get_text("", strip=True)
+                    for k in ("Книги автора", "Произведения автора", "Найденные книги", "Список произведений"))
         )
         h_section = _as_tag(h_section)
 
+        filled = False
         if h_section:
             ul = _as_tag(h_section.find_next("ul"))
             if ul:
@@ -363,8 +375,9 @@ async def get_author_books(author_id: str, default_author: Optional[str] = None)
                     hr = _str_attr(a_tag, "href")
                     b_id = hr.split("/b/")[-1] if "/b/" in hr else "???"
 
-                    if default_author is not None:
-                        auth_name = default_author
+                    # текущее имя автора (как было раньше)
+                    if default_author is not None and default_author.strip():
+                        auth_name = default_author.strip()
                     else:
                         h1_author = _as_tag(soup.find("h1"))
                         if h1_author:
@@ -374,38 +387,53 @@ async def get_author_books(author_id: str, default_author: Optional[str] = None)
                             auth_name = "Неизвестен"
 
                     out.append({"id": b_id, "title": t_clean, "author": auth_name})
+                filled = bool(out)
 
-            if out:
-                logger.info("get_author_books done (from section): %d items", len(out))
-                return out
+        # --- fallback: собрать все ссылки вида /b/<id> ---
+        if not filled:
+            links = soup.find_all("a", href=re.compile(r"^/b/\d+$"))
+            seen = set()
+            for link in links:
+                link = _as_tag(link)
+                if not link:
+                    continue
+                hr = _str_attr(link, "href")
+                b_id = hr.split("/b/")[-1]
+                if b_id in seen:
+                    continue
+                seen.add(b_id)
+                title = _text_clean(link.get_text())
 
-        # fallback: соберём все /b/<id>
-        links = soup.find_all("a", href=re.compile(r"^/b/\d+$"))
-        seen = set()
-        for link in links:
-            link = _as_tag(link)
-            if not link:
-                continue
-            hr = _str_attr(link, "href")
-            b_id = hr.split("/b/")[-1]
-            if b_id in seen:
-                continue
-            seen.add(b_id)
-            title = _text_clean(link.get_text())
-
-            if default_author is not None:
-                auth_name = default_author
-            else:
-                h1_author = _as_tag(soup.find("h1"))
-                if h1_author:
-                    text_h1 = _text_clean(h1_author.get_text())
-                    auth_name = text_h1 if "флибуста" not in text_h1.lower() else "Неизвестен"
+                if default_author is not None and default_author.strip():
+                    auth_name = default_author.strip()
                 else:
-                    auth_name = "Неизвестен"
+                    h1_author = _as_tag(soup.find("h1"))
+                    if h1_author:
+                        text_h1 = _text_clean(h1_author.get_text())
+                        auth_name = text_h1 if "флибуста" not in text_h1.lower() else "Неизвестен"
+                    else:
+                        auth_name = "Неизвестен"
 
-            out.append({"id": b_id, "title": title, "author": auth_name})
+                out.append({"id": b_id, "title": title, "author": auth_name})
 
-        logger.info("get_author_books done (fallback): %d items", len(out))
+        # --- упрощённый «доводчик»: если имя автора «плохое», берём его с первой книги ---
+        if out:
+            current_name = (out[0].get("author") or "").strip()
+            # если default_author валиден — он приоритетнее и запроса к книге не делаем
+            if not (default_author and not is_poor(default_author)):
+                if is_poor(current_name):
+                    try:
+                        # одна дополнительная загрузка детали первой книги
+                        details = await get_book_details(out[0]["id"])
+                        full_name = (details.get("author") or "").strip()
+                        if not is_poor(full_name):
+                            for r in out:
+                                r["author"] = full_name
+                    except Exception:
+                        # не удалось — просто оставим как есть
+                        pass
+
+        logger.info("get_author_books done: %d items", len(out))
         return out
 
     except Exception:
