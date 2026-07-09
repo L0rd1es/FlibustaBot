@@ -5,16 +5,17 @@ import time
 import aiohttp
 import re
 import logging
-import random
 from typing import Any, Dict, List, Optional, Callable
 
 from bs4 import BeautifulSoup, Tag
-from config import FLIBUSTA_MIRRORS, RATE_LIMIT_RPS
+from config import FLIBUSTA_MIRRORS, RATE_LIMIT_RPS, FETCH_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
 
 # --------- Глобальные состояния ---------
-mirror_state: List[Dict[str, Any]] = [{"url": m, "penalty": 0} for m in FLIBUSTA_MIRRORS]
+mirror_state: List[Dict[str, Any]] = [
+    {"url": m, "penalty": 0, "index": i} for i, m in enumerate(FLIBUSTA_MIRRORS)
+]
 _mirrors_lock = asyncio.Lock()
 
 _last_request_mono = 0.0
@@ -22,7 +23,11 @@ _rate_limit_lock = asyncio.Lock()
 
 _session: Optional[aiohttp.ClientSession] = None
 
-_DEFAULT_TIMEOUT = aiohttp.ClientTimeout(total=15)
+_DEFAULT_TIMEOUT = aiohttp.ClientTimeout(
+    total=FETCH_TIMEOUT_SECONDS,
+    connect=10,
+    sock_read=FETCH_TIMEOUT_SECONDS,
+)
 _DEFAULT_HEADERS = {"User-Agent": "FlibustaBot/1.0 (+https://t.me/your_bot)"}
 
 
@@ -87,7 +92,7 @@ async def rate_limit() -> None:
 
 async def _pick_best_mirror() -> Dict[str, Any]:
     async with _mirrors_lock:
-        mirror_state.sort(key=lambda x: x["penalty"])
+        mirror_state.sort(key=lambda x: (x["penalty"], x["index"]))
         return mirror_state[0]
 
 
@@ -99,6 +104,15 @@ async def _bump_penalty(mirror: Dict[str, Any], delta: int = 1) -> None:
 async def _decay_penalty(mirror: Dict[str, Any], delta: int = 1) -> None:
     async with _mirrors_lock:
         mirror["penalty"] = max(0, mirror.get("penalty", 0) - delta)
+
+
+def _log_fetch_error(url: str, exc: Exception, *, context: str = "fetching") -> None:
+    if isinstance(exc, aiohttp.ClientConnectorDNSError):
+        logger.warning("DNS error %s %s: %s", context, url, exc)
+    elif isinstance(exc, aiohttp.ClientConnectorError):
+        logger.warning("Connection error %s %s: %s", context, url, exc)
+    else:
+        logger.exception("Exception during %s: %s", context, url)
 
 
 # --------- Сетевой слой ---------
@@ -135,10 +149,7 @@ async def fetch_url_with_penalty(
         except Exception as e:
             await _bump_penalty(mirror, 2)
             last_exc = e
-            logger.exception("Exception during fetching: %s", url)
-
-        backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.3)
-        await asyncio.sleep(backoff)
+            _log_fetch_error(url, e)
 
     raise last_exc or Exception("All mirrors failed")
 
@@ -325,10 +336,7 @@ async def download_book(book_id: str, fmt: str) -> bytes:
             except Exception as e:
                 await _bump_penalty(mirror, 2)
                 last_exc = e
-                logger.exception("download_book error: %s", url)
-
-            backoff = min(2 ** (attempt - 1), 8) + random.uniform(0, 0.3)
-            await asyncio.sleep(backoff)
+                _log_fetch_error(url, e, context="download_book")
 
     logger.error("download_book failed after retries: %s (%s)", book_id, fmt)
     raise last_exc or Exception(f"Не удалось скачать {book_id} ({fmt})")

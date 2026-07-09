@@ -46,8 +46,8 @@ else
 fi
 DEFAULT_SSH_USER="${SSH_USER:-crearec}"
 SSH_USER="${SSH_USER:-$DEFAULT_SSH_USER}"
-REMOTE_APP_DIR="${REMOTE_APP_DIR:-/home/crearec/flibusta-bot}"
-SERVICE_NAME="${SERVICE_NAME:-flibusta-bot}"
+REMOTE_APP_DIR="${REMOTE_APP_DIR:-/home/crearec/FlibustaBot}"
+SERVICE_NAME="${SERVICE_NAME:-telegram-flibusta}"
 
 SSH_TARGET="${SSH_USER}@${SERVER_HOST}"
 # Use /tmp, not $TMPDIR: macOS TMPDIR paths exceed SSH ControlPath socket length (~104 bytes).
@@ -131,6 +131,7 @@ rsync -az --delete -e "$RSYNC_RSH" \
   --exclude '.env.local' \
   --exclude '*.log' \
   --exclude 'users.db' \
+  --exclude 'utils/whitelist.json' \
   --exclude '*.db-shm' \
   --exclude '*.db-wal' \
   --exclude '.DS_Store' \

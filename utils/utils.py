@@ -8,8 +8,7 @@ from telegram import (
     Update,
     InlineKeyboardMarkup,
     CallbackQuery,
-    Message,               # <-- важно для isinstance
-    InaccessibleMessage,   # <-- на всякий случай, если захочешь использовать
+    Message,
 )
 from telegram.ext import ContextTypes
 from telegram.error import BadRequest

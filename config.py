@@ -5,10 +5,10 @@ import os
 # Админ Telegram ID — сюда бот будет присылать логи и статистику раз в сутки
 ADMIN_ID = 689414006
 
-# Список зеркал Флибусты
+# Список зеркал Флибусты (порядок = приоритет; следующие — fallback)
 FLIBUSTA_MIRRORS = [
     "https://flibusta.is",
-    "https://flibusta.site",
+    "http://flibusta.site",  # HTTPS редиректит на HTTP и часто зависает
 ]
 
 # Путь к файлу базы данных SQLite
@@ -29,6 +29,9 @@ STATS_FILE = os.path.join(os.path.dirname(__file__), "stats.log")
 #  - 2 => 2 запроса/сек
 #  - 0.5 => 1 запрос каждые 2 секунды
 RATE_LIMIT_RPS = 0.5
+
+# Таймаут HTTP-запросов к зеркалам Флибусты (сек). Сайт иногда отвечает >10 с.
+FETCH_TIMEOUT_SECONDS = 25
 
 # --- Время отправки отчётов ---
 # Строка "HH:MM", например "16:45".

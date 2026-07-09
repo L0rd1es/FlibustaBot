@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Manage the remote flibusta-bot systemd service over SSH.
+# Manage the remote telegram-flibusta systemd service over SSH.
 #
 # Usage: ./scripts/service-debian.sh [--remote] [start|restart|status|logs|stop]
 #
@@ -35,7 +35,7 @@ Usage: $0 [--remote] [start|restart|status|logs|stop]
 Environment variables:
   SERVER_HOST      Debian server hostname or IP
   SSH_USER         SSH user (default: crearec)
-  SERVICE_NAME     systemd service name (default: flibusta-bot)
+  SERVICE_NAME     systemd service name (default: telegram-flibusta)
   DEPLOY_PASSWORD  Optional SSH/sudo password (uses sshpass when set)
 
 Examples:
@@ -63,7 +63,7 @@ else
 fi
 
 SSH_USER="${SSH_USER:-crearec}"
-SERVICE_NAME="${SERVICE_NAME:-flibusta-bot}"
+SERVICE_NAME="${SERVICE_NAME:-telegram-flibusta}"
 SSH_TARGET="${SSH_USER}@${SERVER_HOST}"
 
 if [ -z "${DEPLOY_PASSWORD:-}" ]; then

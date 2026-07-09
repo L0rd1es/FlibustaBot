@@ -2,7 +2,7 @@
 
 Useful commands for managing FlibustaBot on a Debian server.
 
-The systemd service name is `flibusta-bot`. The default app directory is `/home/crearec/flibusta-bot`.
+The systemd service name is `telegram-flibusta`. The default app directory is `/home/crearec/FlibustaBot`.
 
 ## Local Helper Script
 
@@ -20,7 +20,7 @@ Override the default server, SSH user, or service name:
 
 ```sh
 SERVER_HOST=192.168.1.135 SSH_USER=crearec ./scripts/service-debian.sh restart
-SERVICE_NAME=flibusta-bot ./scripts/service-debian.sh status
+SERVICE_NAME=telegram-flibusta ./scripts/service-debian.sh status
 ```
 
 ## Service Control
@@ -28,24 +28,24 @@ SERVICE_NAME=flibusta-bot ./scripts/service-debian.sh status
 Run these directly on the Debian server.
 
 ```sh
-sudo systemctl start flibusta-bot
-sudo systemctl stop flibusta-bot
-sudo systemctl restart flibusta-bot
-sudo systemctl status flibusta-bot
+sudo systemctl start telegram-flibusta
+sudo systemctl stop telegram-flibusta
+sudo systemctl restart telegram-flibusta
+sudo systemctl status telegram-flibusta
 ```
 
 Enable or disable start at boot:
 
 ```sh
-sudo systemctl enable flibusta-bot
-sudo systemctl disable flibusta-bot
+sudo systemctl enable telegram-flibusta
+sudo systemctl disable telegram-flibusta
 ```
 
-Reload systemd after editing `/etc/systemd/system/flibusta-bot.service`:
+Reload systemd after editing `/etc/systemd/system/telegram-flibusta.service`:
 
 ```sh
 sudo systemctl daemon-reload
-sudo systemctl restart flibusta-bot
+sudo systemctl restart telegram-flibusta
 ```
 
 ## Logs
@@ -53,19 +53,19 @@ sudo systemctl restart flibusta-bot
 Follow live logs:
 
 ```sh
-sudo journalctl -u flibusta-bot -f
+sudo journalctl -u telegram-flibusta -f
 ```
 
 Show recent logs:
 
 ```sh
-sudo journalctl -u flibusta-bot -n 100 --no-pager
+sudo journalctl -u telegram-flibusta -n 100 --no-pager
 ```
 
 Show logs since boot:
 
 ```sh
-sudo journalctl -u flibusta-bot -b --no-pager
+sudo journalctl -u telegram-flibusta -b --no-pager
 ```
 
 ## Config Changes
@@ -73,14 +73,14 @@ sudo journalctl -u flibusta-bot -b --no-pager
 Edit the bot token:
 
 ```sh
-cd /home/crearec/flibusta-bot
+cd /home/crearec/FlibustaBot
 nano .env
 ```
 
 Restart after changing `.env`:
 
 ```sh
-sudo systemctl restart flibusta-bot
+sudo systemctl restart telegram-flibusta
 ```
 
 Other settings (mirrors, admin ID, rate limits) are in `config.py` and take effect after redeploy or manual file update plus restart.
@@ -97,7 +97,7 @@ From your local project root:
 Override deploy defaults:
 
 ```sh
-SSH_USER=crearec SERVER_HOST=192.168.1.135 REMOTE_APP_DIR=/home/crearec/flibusta-bot ./scripts/deploy.sh
+SSH_USER=crearec SERVER_HOST=192.168.1.135 REMOTE_APP_DIR=/home/crearec/FlibustaBot ./scripts/deploy.sh
 ```
 
 ## Troubleshooting
@@ -105,26 +105,26 @@ SSH_USER=crearec SERVER_HOST=192.168.1.135 REMOTE_APP_DIR=/home/crearec/flibusta
 Check whether the service is active:
 
 ```sh
-systemctl is-active flibusta-bot
+systemctl is-active telegram-flibusta
 ```
 
 Check whether the service is enabled at boot:
 
 ```sh
-systemctl is-enabled flibusta-bot
+systemctl is-enabled telegram-flibusta
 ```
 
 Inspect the installed service file:
 
 ```sh
-systemctl cat flibusta-bot
+systemctl cat telegram-flibusta
 ```
 
 Check the Python version:
 
 ```sh
 python3 --version
-/home/crearec/flibusta-bot/.venv/bin/python --version
+/home/crearec/FlibustaBot/.venv/bin/python --version
 ```
 
 Python should be 3.12 or newer.
@@ -137,5 +137,5 @@ Service fails with `Failed at step NAMESPACE` or `Failed to set up mount namespa
 
 Bot fails to start with token error:
 
-- Verify `TELEGRAM_BOT_TOKEN` is set in `/home/crearec/flibusta-bot/.env`.
+- Verify `TELEGRAM_BOT_TOKEN` is set in `/home/crearec/FlibustaBot/.env`.
 - Check file permissions: `chmod 600 .env`.

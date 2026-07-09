@@ -82,7 +82,7 @@ fi
 
 echo "[remote] installing dependencies..."
 .venv/bin/pip install -q --upgrade pip
-.venv/bin/pip install -q -r requirements.txt
+.venv/bin/pip install -q --upgrade -r requirements.txt
 
 echo "[remote] installing systemd unit ${SERVICE_NAME}..."
 TMP_UNIT="$(mktemp)"
@@ -96,7 +96,17 @@ sudo systemctl daemon-reload
 sudo systemctl enable "${SERVICE_NAME}"
 sudo systemctl restart "${SERVICE_NAME}"
 
+echo "[remote] waiting for service to start..."
+sleep 3
+
+if ! sudo systemctl is-active --quiet "${SERVICE_NAME}"; then
+  echo "[remote] ERROR: ${SERVICE_NAME} is not active after restart." >&2
+  sudo systemctl --no-pager --full status "${SERVICE_NAME}" || true
+  sudo journalctl -u "${SERVICE_NAME}" -n 40 --no-pager || true
+  exit 1
+fi
+
 echo "[remote] service status:"
 sudo systemctl --no-pager --full status "${SERVICE_NAME}" || true
-echo "[remote] recent logs:"
-sudo journalctl -u "${SERVICE_NAME}" -n 30 --no-pager || true
+echo "[remote] startup logs:"
+sudo journalctl -u "${SERVICE_NAME}" -n 20 --no-pager || true

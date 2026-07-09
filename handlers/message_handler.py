@@ -158,7 +158,13 @@ async def text_message_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             settings = await get_user_settings(user_id)
             mode = settings.get("preferred_search_mode") or "general"
 
-        data = await search_books_and_authors(text, mode)
+        data = await run_with_periodic_action(
+            search_books_and_authors(text, mode),
+            update,
+            context,
+            action=ChatAction.TYPING,
+            interval=4,
+        )
         clear_user_ephemeral_mode(user_id)
     except Exception:
         logger.exception("Ошибка при поиске книг и авторов")

@@ -2,7 +2,7 @@
 
 This guide installs FlibustaBot as a systemd process on Debian.
 
-The scripted deployment uses `/home/crearec/flibusta-bot` as the app directory. Adjust paths if needed, then update the systemd unit and `.env` to match.
+The scripted deployment uses `/home/crearec/FlibustaBot` as the app directory. Adjust paths if needed, then update the systemd unit and `.env` to match.
 
 ## 1. Install Python
 
@@ -19,9 +19,9 @@ python3 --version
 Create the app directory and `.env` with your bot token:
 
 ```sh
-mkdir -p /home/crearec/flibusta-bot
-echo 'TELEGRAM_BOT_TOKEN=<your_token>' > /home/crearec/flibusta-bot/.env
-chmod 600 /home/crearec/flibusta-bot/.env
+mkdir -p /home/crearec/FlibustaBot
+echo 'TELEGRAM_BOT_TOKEN=<your_token>' > /home/crearec/FlibustaBot/.env
+chmod 600 /home/crearec/FlibustaBot/.env
 ```
 
 Get a token from [@BotFather](https://t.me/BotFather) on Telegram.
@@ -33,7 +33,7 @@ Other settings (mirrors, admin ID, rate limits) live in `config.py` in the repos
 If you prefer to set up the server without the deploy script:
 
 ```sh
-cd /home/crearec/flibusta-bot
+cd /home/crearec/FlibustaBot
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
@@ -42,18 +42,18 @@ Install the systemd unit:
 
 ```sh
 sed -e "s#__USER__#crearec#g" \
-    -e "s#__APP_DIR__#/home/crearec/flibusta-bot#g" \
-    deploy/flibusta-bot.service | sudo tee /etc/systemd/system/flibusta-bot.service
+    -e "s#__APP_DIR__#/home/crearec/FlibustaBot#g" \
+    deploy/telegram-flibusta.service | sudo tee /etc/systemd/system/telegram-flibusta.service
 sudo systemctl daemon-reload
-sudo systemctl enable flibusta-bot
-sudo systemctl start flibusta-bot
+sudo systemctl enable telegram-flibusta
+sudo systemctl start telegram-flibusta
 ```
 
 Check status and logs:
 
 ```sh
-sudo systemctl status flibusta-bot
-sudo journalctl -u flibusta-bot -f
+sudo systemctl status telegram-flibusta
+sudo journalctl -u telegram-flibusta -f
 ```
 
 The installed unit uses `Restart=always` and `RuntimeMaxSec=24h` to recycle the process once per day.
@@ -61,15 +61,15 @@ The installed unit uses `Restart=always` and `RuntimeMaxSec=24h` to recycle the 
 ## 4. Updating The Service
 
 ```sh
-cd /home/crearec/flibusta-bot
+cd /home/crearec/FlibustaBot
 .venv/bin/pip install -r requirements.txt
-sudo systemctl restart flibusta-bot
+sudo systemctl restart telegram-flibusta
 ```
 
 After editing `.env`, restart the service so the bot reloads the token:
 
 ```sh
-sudo systemctl restart flibusta-bot
+sudo systemctl restart telegram-flibusta
 ```
 
 ## Scripted Deployment
@@ -80,7 +80,7 @@ To deploy or update the app without cloning the repository on the server, run th
 ./scripts/deploy.sh
 ```
 
-By default, the script connects to `192.168.1.135`, rsyncs the project to `/home/crearec/flibusta-bot`, installs dependencies in a venv on the server, installs the `flibusta-bot` systemd unit, and restarts the service. It runs `pytest` locally first and aborts if tests fail.
+By default, the script connects to `192.168.1.135`, rsyncs the project to `/home/crearec/FlibustaBot`, installs dependencies in a venv on the server, installs the `telegram-flibusta` systemd unit, and restarts the service. It runs `pytest` locally first and aborts if tests fail.
 
 Use `--remote` to connect via `crearec.app` instead of the local network IP:
 
@@ -91,7 +91,7 @@ Use `--remote` to connect via `crearec.app` instead of the local network IP:
 Override any of: `SERVER_HOST`, `SSH_USER`, `REMOTE_APP_DIR`, `SERVICE_NAME`.
 
 ```sh
-SERVER_HOST=192.168.1.135 SSH_USER=crearec REMOTE_APP_DIR=/home/crearec/flibusta-bot ./scripts/deploy.sh
+SERVER_HOST=192.168.1.135 SSH_USER=crearec REMOTE_APP_DIR=/home/crearec/FlibustaBot ./scripts/deploy.sh
 ```
 
 Set optional `DEPLOY_PASSWORD` in a local `.env` file (or export it) to skip SSH/sudo prompts during deploy; you need `sshpass` installed locally. When `DEPLOY_PASSWORD` is unset, deploy asks for passwords interactively.
@@ -100,7 +100,7 @@ The deploy script reuses one SSH connection and one `sudo` session on the server
 
 The deploy script never overwrites `.env` on the server. If it is missing, the remote deploy script seeds it from `.env.example` so you can edit it on the server before the bot can start.
 
-The deploy script also never overwrites `users.db` on the server (SQLite user data persists across deploys).
+The deploy script also never overwrites `users.db` or `utils/whitelist.json` on the server (user data and access list persist across deploys).
 
 **Server prerequisite:** Python 3.12+ with `python3-venv` must already be installed on the server (see section 1 above). The deploy script does not install Python for you.
 
@@ -149,7 +149,7 @@ These are the same secrets used by the TelegramVideo project on the same server.
   ```sh
   sudo -n systemctl --version
   sudo -n cp --version
-  sudo -n systemctl status flibusta-bot
+  sudo -n systemctl status telegram-flibusta
   ```
 
 - Python 3.12+ and `.env` with `TELEGRAM_BOT_TOKEN` already configured on the server
@@ -176,7 +176,7 @@ From your local project root, use `scripts/service-debian.sh` to manage the remo
 ./scripts/service-debian.sh --remote status
 ```
 
-The script defaults to `SERVER_HOST=192.168.1.135`, `SSH_USER=crearec`, and `SERVICE_NAME=flibusta-bot`. Override them when needed:
+The script defaults to `SERVER_HOST=192.168.1.135`, `SSH_USER=crearec`, and `SERVICE_NAME=telegram-flibusta`. Override them when needed:
 
 ```sh
 SERVER_HOST=192.168.1.135 SSH_USER=crearec ./scripts/service-debian.sh restart
@@ -189,5 +189,5 @@ For a quick operations reference, see `docs/debian-commands.md`.
 ## Notes
 
 - Keep `.env` readable only by the service user (`chmod 600`).
-- SQLite database (`users.db`) and log files live in the app directory and are excluded from rsync during deploy.
+- SQLite database (`users.db`), whitelist (`utils/whitelist.json`), and log files live in the app directory and are excluded from rsync during deploy.
 - With `ProtectSystem=full`, the app directory must be listed in `ReadWritePaths` — the deploy script handles this automatically.
