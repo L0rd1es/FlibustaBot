@@ -121,10 +121,12 @@ docker compose restart bot
 
 | Secret | Purpose |
 |--------|---------|
+| `GHCR_USERNAME` | GHCR owner username (`CreaRec` / `crearec`) |
+| `GHCR_TOKEN` | PAT from that account with `write:packages` (and `read:packages`) |
 | `DEPLOY_SSH_KEY` | Private key for SSH deploy |
 | `DEPLOY_HOST` | Server hostname |
 | `DEPLOY_USER` | SSH user (for example `crearec`) |
 
-GHCR push uses the workflow `GITHUB_TOKEN` (`packages: write`). No extra registry secret is required for publish.
+Publish logs into GHCR as `crearec` (repo is under `L0rd1es`, so `GITHUB_TOKEN` cannot push that package namespace).
 
 The deploy user needs Docker Compose without sudo, and passwordless sudo for `systemctl` only while the systemd unit is being retired.
