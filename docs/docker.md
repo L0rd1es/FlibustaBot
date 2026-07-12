@@ -1,6 +1,6 @@
 # Docker + GHCR deployment
 
-The bot runs as a Docker container pulled from GitHub Container Registry (GHCR). Releases happen only through GitHub Actions when changes land on `main`. There is no local deploy script.
+The bot runs as a Docker container pulled from GitHub Container Registry (GHCR). Releases happen only through GitHub Actions when changes land on `master`. There is no local deploy script.
 
 Image: `ghcr.io/crearec/crea-flibusta-bot`
 
@@ -8,9 +8,9 @@ Deploy directory: `/home/crearec/crea-flibusta-bot`
 
 ## How a release works
 
-1. Merge or push to `main`.
+1. Merge or push to `master`.
 2. Actions runs tests and builds the image.
-3. Actions pushes tags `main` and `sha-<short>` to GHCR.
+3. Actions pushes tags `master` and `sha-<short>` to GHCR.
 4. Actions copies `docker-compose.yml` to the server, exports `IMAGE_TAG` in the SSH session (overrides `.env` for Compose interpolation), then runs `docker compose pull && docker compose up -d`.
 
 App secrets stay on the server in `.env`. SQLite DB, whitelist, and logs live in `./data`. CI never mutates `.env`.
@@ -49,7 +49,7 @@ Create `.env` from [`.env.example`](../.env.example):
 ```sh
 TELEGRAM_BOT_TOKEN=<token from @BotFather>
 IMAGE=ghcr.io/crearec/crea-flibusta-bot
-IMAGE_TAG=main
+IMAGE_TAG=master
 ```
 
 ```sh
@@ -92,7 +92,7 @@ docker compose pull
 docker compose up -d
 ```
 
-Or merge to `main` and let Actions deploy.
+Or merge to `master` and let Actions deploy.
 
 Check Portainer, `docker compose logs -f bot`, and send `/start` in Telegram.
 
@@ -100,7 +100,7 @@ After the container is stable, you can remove the old full source checkout (`/ho
 
 ## Day-to-day operations
 
-Deploy: merge to `main`.
+Deploy: merge to `master`.
 
 On the server (or via Portainer):
 

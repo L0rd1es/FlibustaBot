@@ -1,6 +1,6 @@
 services:
   bot:
-    image: ${IMAGE:-ghcr.io/crearec/crea-flibusta-bot}:${IMAGE_TAG:-main}
+    image: ${IMAGE:-ghcr.io/crearec/crea-flibusta-bot}:${IMAGE_TAG:-master}
     restart: unless-stopped
     env_file: .env
     environment:

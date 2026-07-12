@@ -4,7 +4,7 @@ Useful commands for the FlibustaBot container on the Debian server.
 
 Deploy directory (default): `/home/crearec/crea-flibusta-bot`
 
-Releases are deployed only by GitHub Actions on `main`. There is no local deploy helper script. You can also use Portainer for the same container.
+Releases are deployed only by GitHub Actions on `master`. There is no local deploy helper script. You can also use Portainer for the same container.
 
 ## Container control
 
@@ -52,7 +52,7 @@ Other settings (mirrors, admin ID, rate limits) are in `config.py` and take effe
 
 ## Deploy / update
 
-Merge to `main`. Actions builds, pushes to GHCR, and runs pull/up on the server.
+Merge to `master`. Actions builds, pushes to GHCR, and runs pull/up on the server.
 
 ## Troubleshooting
 

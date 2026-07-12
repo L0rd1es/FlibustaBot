@@ -35,10 +35,10 @@ Python is **not** required on the server for runtime.
 
 ## GitHub Actions
 
-Push/merge to `main` runs:
+Push/merge to `master` runs:
 
 1. `test` — `pytest` and a non-pushing Docker build
-2. `publish` — push `ghcr.io/crearec/crea-flibusta-bot:main` and `:sha-<short>`
+2. `publish` — push `ghcr.io/crearec/crea-flibusta-bot:master` and `:sha-<short>`
 3. `deploy` — SCP `docker-compose.yml`, export `IMAGE_TAG`, `docker compose pull && up -d`
 
 Required secrets: `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER`.
