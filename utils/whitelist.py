@@ -5,12 +5,12 @@ import os
 import logging
 import re
 from typing import List, Optional
-from config import ADMIN_ID
+from config import ADMIN_ID, DATA_DIR
 
 logger = logging.getLogger(__name__)
 
 # Путь к файлу whitelist (список строк вида "@username")
-WHITELIST_FILE = os.path.join(os.path.dirname(__file__), "whitelist.json")
+WHITELIST_FILE = os.path.join(DATA_DIR, "whitelist.json")
 
 # Кэш: чтобы не читать файл на каждый чих
 _cached_mtime: Optional[float] = None

@@ -1,0 +1,10 @@
+services:
+  bot:
+    image: ${IMAGE:-ghcr.io/crearec/crea-flibusta-bot}:${IMAGE_TAG:-main}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATA_DIR: /app/data
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./data:/app/data

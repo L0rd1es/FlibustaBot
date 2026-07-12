@@ -34,14 +34,6 @@ pytest
 
 ## Deployment
 
-Production deploys to a Debian server via SSH/rsync and systemd. See [docs/debian-server.md](docs/debian-server.md) for the full guide.
+Production runs in Docker on Debian. Releases go through GitHub Actions → GHCR → `docker compose pull/up`. See [docs/docker.md](docs/docker.md) for bootstrap and [docs/debian-commands.md](docs/debian-commands.md) for day-to-day ops.
 
-Quick start:
-
-```sh
-./scripts/deploy.sh          # LAN (192.168.1.135)
-./scripts/deploy.sh --remote   # crearec.app
-./scripts/service-debian.sh --remote status
-```
-
-Pushes to `main` trigger automatic deploy via GitHub Actions (same secrets as TelegramVideo: `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER`).
+Deploy: merge or push to `main`. Required secrets: `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER` (same as the other bots on this host).
