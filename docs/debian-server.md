@@ -39,9 +39,9 @@ Push/merge to `master` runs:
 
 1. `test` — `pytest` and a non-pushing Docker build
 2. `publish` — push `ghcr.io/crearec/crea-flibusta-bot:master` and `:sha-<short>`
-3. `deploy` — SCP `docker-compose.yml`, export `IMAGE_TAG`, `docker compose pull && up -d`
+3. `deploy` — join Tailscale (`tag:ci`), SCP `docker-compose.yml`, export `IMAGE_TAG`, `docker compose pull && up -d`
 
-Required secrets: `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER`.
+Required secrets: `DEPLOY_SSH_KEY`, `DEPLOY_HOST` (Tailscale IP or MagicDNS), `DEPLOY_USER`, `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET`. See [docker.md](docker.md) for details.
 
 Actions never overwrites `.env` or files under `data/`.
 

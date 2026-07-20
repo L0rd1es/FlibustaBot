@@ -124,9 +124,15 @@ docker compose restart bot
 | `GHCR_USERNAME` | GHCR owner username (`CreaRec` / `crearec`) |
 | `GHCR_TOKEN` | PAT from that account with `write:packages` (and `read:packages`) |
 | `DEPLOY_SSH_KEY` | Private key for SSH deploy |
-| `DEPLOY_HOST` | Server hostname |
+| `DEPLOY_HOST` | Tailscale IP or MagicDNS hostname of the server (for example `100.118.169.52`) |
 | `DEPLOY_USER` | SSH user (for example `crearec`) |
+| `TS_OAUTH_CLIENT_ID` | Tailscale OAuth client ID (Trust credentials) for ephemeral CI nodes |
+| `TS_OAUTH_SECRET` | Tailscale OAuth client secret (Trust credentials) |
+
+Deploy joins the tailnet with `tag:ci` via [`tailscale/github-action`](https://github.com/tailscale/github-action), then SSHs to `DEPLOY_HOST`. Create the OAuth client under Tailscale **Settings → Trust credentials** (not legacy OAuth clients).
 
 Publish logs into GHCR as `crearec` (repo is under `L0rd1es`, so `GITHUB_TOKEN` cannot push that package namespace).
+
+The deploy user needs Docker Compose without sudo, and passwordless sudo for `systemctl` only while the systemd unit is being retired.
 
 The deploy user needs Docker Compose without sudo, and passwordless sudo for `systemctl` only while the systemd unit is being retired.

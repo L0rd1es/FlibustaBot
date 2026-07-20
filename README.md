@@ -36,4 +36,4 @@ pytest
 
 Production runs in Docker on Debian. Releases go through GitHub Actions → GHCR → `docker compose pull/up`. See [docs/docker.md](docs/docker.md) for bootstrap and [docs/debian-commands.md](docs/debian-commands.md) for day-to-day ops.
 
-Deploy: merge or push to `master`. Required secrets: `DEPLOY_SSH_KEY`, `DEPLOY_HOST`, `DEPLOY_USER` (same as the other bots on this host).
+Deploy: merge or push to `master`. Required secrets: `DEPLOY_SSH_KEY`, `DEPLOY_HOST` (Tailscale IP or MagicDNS), `DEPLOY_USER`, `TS_OAUTH_CLIENT_ID`, `TS_OAUTH_SECRET` (same Tailscale Trust credentials as the other bots on this host).

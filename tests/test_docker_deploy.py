@@ -21,6 +21,8 @@ def test_cicd_workflow_publishes_to_ghcr_and_deploys_over_ssh():
     assert "secrets.GHCR_TOKEN" in workflow
     assert "GITHUB_TOKEN" not in workflow
     assert "ghcr.io/crearec/crea-flibusta-bot" in workflow
+    assert "tailscale/github-action" in workflow
+    assert "tag:ci" in workflow
     assert "docker compose pull" in workflow
     assert "docker compose up -d" in workflow
     assert "docker-compose.yml" in workflow
