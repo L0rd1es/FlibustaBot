@@ -1,0 +1,8 @@
+python-telegram-bot[rate-limiter]>=20.8,<21.0
+python-dotenv
+nest-asyncio
+APScheduler
+aiohttp
+aiosqlite
+beautifulsoup4
+lxml

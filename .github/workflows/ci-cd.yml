@@ -1,0 +1,128 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  IMAGE: ghcr.io/crearec/crea-flibusta-bot
+  DEPLOY_DIR: /home/crearec/crea-flibusta-bot
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m pytest
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build image (no push)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          tags: ${{ env.IMAGE }}:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    permissions:
+      contents: read
+    outputs:
+      image_tag: ${{ steps.meta.outputs.image_tag }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GHCR_USERNAME }}
+          password: ${{ secrets.GHCR_TOKEN }}
+
+      - name: Image tags
+        id: meta
+        run: |
+          SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
+          echo "image_tag=sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+          echo "tags=${IMAGE}:master,${IMAGE}:sha-${SHORT_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: publish
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Tailscale
+        uses: tailscale/github-action@v4
+        with:
+          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          tags: tag:ci
+          ping: ${{ secrets.DEPLOY_HOST }}
+
+      - name: Setup SSH key
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ secrets.DEPLOY_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Deploy compose pull/up
+        env:
+          SSH_USER: ${{ secrets.DEPLOY_USER }}
+          SERVER_HOST: ${{ secrets.DEPLOY_HOST }}
+          IMAGE_TAG: ${{ needs.publish.outputs.image_tag }}
+        run: |
+          set -euo pipefail
+          SSH_TARGET="${SSH_USER}@${SERVER_HOST}"
+          SSH=(ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes)
+          SCP=(scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes)
+
+          "${SSH[@]}" "$SSH_TARGET" "mkdir -p '${DEPLOY_DIR}/data'"
+          "${SCP[@]}" docker-compose.yml "${SSH_TARGET}:${DEPLOY_DIR}/docker-compose.yml"
+
+          "${SSH[@]}" "$SSH_TARGET" bash -s <<EOF
+          set -euo pipefail
+          cd '${DEPLOY_DIR}'
+
+          if [ ! -f .env ]; then
+            echo "ERROR: ${DEPLOY_DIR}/.env is missing. Create it from .env.example (TELEGRAM_BOT_TOKEN, IMAGE, IMAGE_TAG)." >&2
+            exit 1
+          fi
+
+          if [ -f /etc/systemd/system/telegram-flibusta.service ] || systemctl list-unit-files telegram-flibusta.service 2>/dev/null | grep -q telegram-flibusta; then
+            sudo systemctl disable --now telegram-flibusta || true
+          fi
+
+          # Shell IMAGE_TAG overrides .env for compose interpolation; do not mutate secrets.
+          export IMAGE_TAG='${IMAGE_TAG}'
+          docker compose pull
+          docker compose up -d
+          docker compose ps
+          docker compose logs --tail=30 bot
+          EOF
